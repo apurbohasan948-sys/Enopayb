@@ -54,38 +54,28 @@ jobs:
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
+      - name: Make Gradle Wrapper Executable
+        run: chmod +x ./gradlew
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.13
 
-      - name: Build Debug & Release APK
+      - name: Build Debug and Release APK
         run: |
-          gradle :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
+          ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
 
-      - name: Rename APKs for Clarity
+      - name: Collect & Organize APK Outputs
         run: |
           mkdir -p outputs
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk outputs/JARVIS-debug.apk
-          fi
-          if [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
-            cp app/build/outputs/apk/release/app-release-unsigned.apk outputs/JARVIS-release-unsigned.apk
-          elif [ -f app/build/outputs/apk/release/app-release.apk ]; then
-            cp app/build/outputs/apk/release/app-release.apk outputs/JARVIS-release.apk
-          fi
+          find app/build/outputs/apk -name "*.apk" -type f -exec cp {} outputs/ \;
+          ls -la outputs/
 
-      - name: Upload Debug APK Artifact
+      - name: Upload Built APKs
         uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-Debug-APK
-          path: outputs/JARVIS-debug.apk
-          retention-days: 30
-
-      - name: Upload All Built APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: JARVIS-All-APKs
+          name: JARVIS-APKs
           path: outputs/*.apk
           retention-days: 30
 
