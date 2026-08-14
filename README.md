@@ -24,17 +24,23 @@
 
 ## 🤖 Automatic GitHub APK Builds (CI/CD)
 
-This repository comes pre-configured with **GitHub Actions CI/CD** (`.github/workflows/build-apk.yml`).
+This repository comes pre-configured with **GitHub Actions CI/CD** (`.github/workflows/build.yml`).
 
 ### How to download the automatically built APK from GitHub:
 1. **On Every Push/PR**: GitHub Actions automatically compiles both debug and release APKs.
 2. **Download Artifacts**:
    - Navigate to your repository's **Actions** tab on GitHub.
-   - Click the latest **Build & Release Android APK** workflow run.
-   - Under **Artifacts** at the bottom of the page, click **`JARVIS-Android-APKs`** to download the generated APKs.
+   - Click the latest **Build Android APKs** workflow run.
+   - Under **Artifacts** at the bottom of the page, download **`JARVIS-Debug-APK`**, **`JARVIS-Release-APK`**, or **`JARVIS-All-APKs`**.
 3. **Automated GitHub Releases**:
    - Push any version tag (e.g., `git tag v1.0.0 && git push origin v1.0.0`).
    - GitHub Actions will create a new release on the **Releases** page and attach the compiled APKs.
+
+### 🔐 Optional GitHub Repository Secrets
+You can configure the following in **Settings > Secrets and variables > Actions**:
+- `GEMINI_API_KEY`: Injects your Gemini API key during the build.
+- `RELEASE_KEYSTORE_BASE64`: Base64 encoded `.jks` release keystore for custom signing.
+- `STORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`: Keystore credentials (optional, defaults to standard debug credentials if not provided).
 
 ---
 
