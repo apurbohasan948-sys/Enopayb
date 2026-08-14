@@ -246,12 +246,14 @@ fun HudConsoleScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             val chips = listOf(
-                "Turn on flashlight" to "toggle_flashlight",
-                "Turn off flashlight" to "toggle_flashlight",
-                "Battery status" to "query_battery_status",
-                "Audit security" to "security_audit_check",
-                "Open Settings" to "open_app",
-                "Hello JARVIS" to "chat",
+                "WhatsApp Hammad" to "whatsapp_msg",
+                "Call Hammad" to "call_hammad",
+                "Open YouTube" to "open_yt",
+                "Read Screen" to "read_screen",
+                "Device Status" to "query_battery_status",
+                "Turn on Flashlight" to "toggle_flashlight",
+                "Security Audit" to "security_audit_check",
+                "হোয়াটসঅ্যাপ মেসেজ" to "bn_wa",
                 "বাংলা মোড" to "lang_bn"
             )
             items(chips) { (label, tag) ->
@@ -261,9 +263,17 @@ fun HudConsoleScreen(
                     border = BorderStroke(0.8.dp, JarvisCyan.copy(alpha = 0.35f)),
                     modifier = Modifier.clickable {
                         when (tag) {
+                            "whatsapp_msg" -> viewModel.sendUserPrompt("WhatsApp খুলে Hammad-কে বলো আমি পরে আসছি")
+                            "call_hammad" -> viewModel.sendUserPrompt("Call Hammad")
+                            "open_yt" -> viewModel.sendUserPrompt("Open YouTube")
+                            "read_screen" -> viewModel.sendUserPrompt("Read screen")
+                            "bn_wa" -> {
+                                viewModel.setLanguage("BN")
+                                viewModel.sendUserPrompt("হোয়াটসঅ্যাপ এ Hammad কে মেসেজ দাও আমি ১০ মিনিট পরে আসব")
+                            }
                             "lang_bn" -> {
                                 viewModel.setLanguage("BN")
-                                viewModel.sendUserPrompt("হ্যালো জারভিস, কেমন আছো?")
+                                viewModel.sendUserPrompt("হ্যালো জারভিস, তুমি কি করতে পারো?")
                             }
                             else -> viewModel.sendUserPrompt(label)
                         }

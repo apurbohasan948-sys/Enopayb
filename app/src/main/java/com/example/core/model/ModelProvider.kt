@@ -1,6 +1,7 @@
 package com.example.core.model
 
 import com.example.BuildConfig
+import com.example.core.tools.ToolDefinitions
 import com.example.data.local.entity.KnowledgeChunkEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -45,9 +46,8 @@ interface ModelProvider {
 }
 
 /**
- * Local Model Provider: Fast, offline, privacy-first inference engine.
- * Tailored for Snapdragon 685 (Redmi Note 12) CPU instruction sets.
- * Uses local intent matching, keyword heuristics, and local RAG context injection.
+ * Local Model Provider: Fast, offline, privacy-first intent reasoning engine.
+ * Understands English, Bengali, and Banglish natural language patterns.
  */
 class LocalModelProvider : ModelProvider {
     var modelName: String = "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
@@ -61,163 +61,220 @@ class LocalModelProvider : ModelProvider {
         language: String
     ): ModelResponse = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
-        val lower = prompt.trim().lowercase()
+        val raw = prompt.trim()
+        val lower = raw.lowercase()
 
-        // 1. Tool Intent Heuristics (Local fast-path)
+        // 1. Tool Intent Heuristics (Local fast-path: Bengali, English, Banglish)
         val toolIntent: ToolIntent? = when {
+            // WhatsApp message
+            lower.contains("whatsapp") && (lower.contains("message") || lower.contains("send") || lower.contains("বলো") || lower.contains("মেসেজ") || lower.contains("পাঠাও")) -> {
+                val (contact, msg) = extractWhatsAppParameters(raw)
+                ToolIntent(
+                    toolName = "send_whatsapp_message",
+                    arguments = mapOf("contact_name" to contact, "message" to msg),
+                    riskLevel = "MEDIUM",
+                    rationale = "User requested sending a WhatsApp message"
+                )
+            }
+            // WhatsApp chat open
+            lower.contains("whatsapp") && (lower.contains("open") || lower.contains("খোল") || lower.contains("চ্যাট")) -> {
+                val contact = extractContactFromQuery(raw)
+                if (contact.isNotEmpty()) {
+                    ToolIntent(
+                        toolName = "open_whatsapp_chat",
+                        arguments = mapOf("contact_name" to contact),
+                        riskLevel = "LOW",
+                        rationale = "User requested opening a WhatsApp chat"
+                    )
+                } else {
+                    ToolIntent(
+                        toolName = "open_app",
+                        arguments = mapOf("app_name" to "WhatsApp"),
+                        riskLevel = "LOW",
+                        rationale = "Open WhatsApp application"
+                    )
+                }
+            }
+            // Phone call
+            lower.startsWith("call ") || lower.startsWith("কল ") || lower.startsWith("ফোন ") || lower.contains("call to ") || lower.contains("কে কল করো") || lower.contains("কে ফোন দাও") -> {
+                val target = extractContactFromCallQuery(raw)
+                ToolIntent(
+                    toolName = "make_phone_call",
+                    arguments = mapOf("contact_name" to target),
+                    riskLevel = "MEDIUM",
+                    rationale = "Telephony call requires confirmation"
+                )
+            }
+            // SMS message
+            lower.contains("sms") || (lower.contains("মেসেজ") && !lower.contains("whatsapp")) -> {
+                val (contact, msg) = extractSmsParameters(raw)
+                ToolIntent(
+                    toolName = "send_sms",
+                    arguments = mapOf("recipient" to contact, "message" to msg),
+                    riskLevel = "MEDIUM",
+                    rationale = "SMS draft/sending intent"
+                )
+            }
+            // Contacts lookup
+            lower.contains("contact") || lower.contains("নাম্বার") || lower.contains("number of") -> {
+                val name = extractContactFromQuery(raw)
+                ToolIntent(
+                    toolName = "get_contacts",
+                    arguments = mapOf("name_query" to name),
+                    riskLevel = "LOW",
+                    rationale = "Lookup contact details"
+                )
+            }
+            // Flashlight / Torch
             lower.contains("flashlight") || lower.contains("torch") || lower.contains("ফ্ল্যাশলাইট") || lower.contains("আলো") -> {
                 val state = !lower.contains("off") && !lower.contains("বন্ধ")
                 ToolIntent(
                     toolName = "toggle_flashlight",
                     arguments = mapOf("state" to state.toString()),
                     riskLevel = "LOW",
-                    rationale = "Local device hardware action"
+                    rationale = "Hardware camera flashlight toggle"
                 )
             }
-            lower.startsWith("open ") || lower.startsWith("খোল ") || lower.startsWith("launch ") -> {
-                val appName = prompt.substringAfter(" ").trim()
+            // Open App
+            lower.startsWith("open ") || lower.startsWith("খোল ") || lower.startsWith("চালু করো ") || lower.startsWith("launch ") -> {
+                val appName = extractAppNameFromOpenQuery(raw)
                 ToolIntent(
                     toolName = "open_app",
                     arguments = mapOf("app_name" to appName),
                     riskLevel = "LOW",
-                    rationale = "Local application launch"
+                    rationale = "Launch installed application"
                 )
             }
-            lower.contains("battery") || lower.contains("চার্জ") || lower.contains("ব্যাটারি") -> {
-                ToolIntent(
-                    toolName = "query_battery_status",
-                    arguments = emptyMap(),
-                    riskLevel = "LOW",
-                    rationale = "Local system diagnostics"
-                )
+            // Navigation: Back / Home
+            lower == "go back" || lower == "back" || lower == "পিছনে যাও" -> {
+                ToolIntent("press_back", emptyMap(), "LOW", "Back navigation")
             }
-            lower.startsWith("call ") || lower.startsWith("ডায়াল ") || lower.startsWith("ফোন ") -> {
-                val target = prompt.substringAfter(" ").trim()
-                ToolIntent(
-                    toolName = "make_call",
-                    arguments = mapOf("contact" to target),
-                    riskLevel = "MEDIUM",
-                    rationale = "Telephony interaction requires confirmation"
-                )
+            lower == "go home" || lower == "home" || lower == "হোমে যাও" -> {
+                ToolIntent("press_home", emptyMap(), "LOW", "Home navigation")
             }
-            lower.startsWith("send message to ") || lower.startsWith("মেসেজ পাঠাও ") || lower.startsWith("sms to ") -> {
-                val target = prompt.substringAfter("to ").substringBefore(":").trim()
-                val msg = if (prompt.contains(":")) prompt.substringAfter(":").trim() else "Hello from JARVIS"
-                ToolIntent(
-                    toolName = "send_message",
-                    arguments = mapOf("recipient" to target, "message" to msg),
-                    riskLevel = "MEDIUM",
-                    rationale = "Messaging intent"
-                )
+            // Screen Reading
+            lower.contains("read screen") || lower.contains("স্ক্রিন পড়") || lower.contains("what is on screen") -> {
+                ToolIntent("read_screen", emptyMap(), "LOW", "Screen inspection")
             }
+            // Battery & Device Diagnostics
+            lower.contains("battery") || lower.contains("চার্জ") || lower.contains("ব্যাটারি") || lower.contains("device status") -> {
+                ToolIntent("get_device_status", emptyMap(), "LOW", "Device diagnostics")
+            }
+            // Web Search
+            lower.startsWith("search ") || lower.startsWith("গুগল করো ") || lower.startsWith("খোঁজ ") -> {
+                val query = raw.substringAfter(" ").trim()
+                ToolIntent("search_web", mapOf("query" to query), "LOW", "Web search")
+            }
+            // Security Audit
             lower.contains("security") || lower.contains("audit") || lower.contains("সিকিউরিটি") -> {
-                ToolIntent(
-                    toolName = "security_audit_check",
-                    arguments = emptyMap(),
-                    riskLevel = "LOW",
-                    rationale = "Defensive security scan"
-                )
+                ToolIntent("security_audit_check", emptyMap(), "LOW", "Security audit")
             }
             else -> null
         }
 
-        // Simulate local GGUF token generation latency (30-80ms for local quantized inference)
-        delay(45)
-
         val latency = System.currentTimeMillis() - startTime
 
         if (toolIntent != null) {
-            val reply = when (toolIntent.toolName) {
-                "toggle_flashlight" -> {
-                    val s = toolIntent.arguments["state"] == "true"
-                    if (language == "BN") "ফ্ল্যাশলাইট ${if (s) "চালু" else "বন্ধ"} করা হচ্ছে।" else "Switching flashlight ${if (s) "ON" else "OFF"}."
-                }
-                "open_app" -> {
-                    val app = toolIntent.arguments["app_name"] ?: "Application"
-                    if (language == "BN") "$app খোলা হচ্ছে..." else "Opening $app..."
-                }
-                "query_battery_status" -> {
-                    if (language == "BN") "ব্যাটারি স্ট্যাটাস চেক করছি..." else "Checking device battery and health metrics..."
-                }
-                "make_call" -> {
-                    val c = toolIntent.arguments["contact"]
-                    if (language == "BN") "$c কে কল করার জন্য ডায়ালার প্রস্তুত করা হচ্ছে..." else "Preparing dialer to call $c."
-                }
-                "send_message" -> {
-                    val r = toolIntent.arguments["recipient"]
-                    if (language == "BN") "$r এর জন্য মেসেজ তৈরি করা হচ্ছে।" else "Composing message to $r."
-                }
-                "security_audit_check" -> {
-                    if (language == "BN") "সিকিউরিটি অডিট চলছে..." else "Running defensive security audit..."
-                }
-                else -> "Executing local tool: ${toolIntent.toolName}"
-            }
+            val responseText = generateLocalIntentResponseText(toolIntent)
             return@withContext ModelResponse(
-                text = reply,
+                text = responseText,
                 latencyMs = latency,
-                providerType = "LOCAL (GGUF)",
+                providerType = "LOCAL_REASONER",
                 confidence = 0.95f,
-                toolIntent = toolIntent
-            )
-        }
-
-        // 2. RAG Augmented answer if matching context found
-        if (contextChunks.isNotEmpty()) {
-            val topChunk = contextChunks.first()
-            val ragReply = if (language == "BN") {
-                "লোকাল মেমরি ও RAG নলেজ বেস থেকে প্রাপ্ত তথ্য (${topChunk.title}):\n\n${topChunk.content}"
-            } else {
-                "Retrieved from local knowledge base (${topChunk.title}):\n\n${topChunk.content}"
-            }
-            return@withContext ModelResponse(
-                text = ragReply,
-                latencyMs = latency + 20,
-                providerType = "LOCAL (RAG)",
-                confidence = 0.88f,
+                toolIntent = toolIntent,
                 usedContextChunks = contextChunks
             )
         }
 
-        // 3. General conversational response
-        val responseText = when {
-            lower.contains("who are you") || lower.contains("তুমি কে") || lower.contains("your name") -> {
-                if (language == "BN") "আমি জারভিস (JARVIS), আপনার সম্পূর্ণ অফলাইন-সক্ষম, প্রাইভেসি-ফার্স্ট পার্সোনাল এআই অ্যাসিস্ট্যান্ট।"
-                else "I am JARVIS, your privacy-first, offline-capable Android AI assistant. I run locally on your device with hardware-optimized AI."
-            }
-            lower.contains("hello") || lower.contains("hi") || lower.contains("হ্যালো") || lower.contains("hey jarvis") -> {
-                if (language == "BN") "হ্যালো! আমি প্রস্তুত। আপনাকে কীভাবে সাহায্য করতে পারি?"
-                else "Greetings. JARVIS online and standing by. What task shall we execute?"
-            }
-            lower.contains("architecture") || lower.contains("specs") -> {
-                "Architecture: Snapdragon 685 optimized CPU runtime. Local 4-bit GGUF model + Room SQLite vector memory + Defensive Security Monitor + Optional Gemini Supervisor."
-            }
-            else -> {
-                if (language == "BN") {
-                    "লোকাল মডেলের মাধ্যমে আপনার কমান্ড বিশ্লেষণ করা হয়েছে: \"$prompt\"। জটিল জ্ঞান বা বর্তমান তথ্যের প্রয়োজন হলে ক্লাউড টিচার সহায়তা নেওয়া যাবে।"
-                } else {
-                    "Processed locally via on-device AI engine for: \"$prompt\". If complex external reasoning is required, Gemini Teacher Supervisor can be invoked."
-                }
-            }
+        // Conversational / RAG response
+        val conversationalText = if (contextChunks.isNotEmpty()) {
+            "JARVIS Local Knowledge: " + contextChunks.first().content
+        } else {
+            "JARVIS Standby: Command analyzed. Ready for phone tasks or knowledge queries."
         }
 
         ModelResponse(
-            text = responseText,
+            text = conversationalText,
             latencyMs = latency,
-            providerType = "LOCAL (GGUF)",
-            confidence = 0.75f
+            providerType = "LOCAL_REASONER",
+            confidence = 0.70f,
+            toolIntent = null,
+            usedContextChunks = contextChunks
         )
+    }
+
+    private fun extractWhatsAppParameters(raw: String): Pair<String, String> {
+        val lower = raw.lowercase()
+        var contact = "Contact"
+        var message = "I will call you later."
+
+        if (raw.contains("-কে বলো") || raw.contains("-কে বল")) {
+            val beforeKe = raw.substringBefore("-কে").substringAfter("খুলে ").substringAfter("WhatsApp ").trim()
+            if (beforeKe.isNotEmpty()) contact = beforeKe
+            val afterBolo = raw.substringAfter("বলো ").substringAfter("বল ").trim()
+            if (afterBolo.isNotEmpty()) message = afterBolo
+        } else if (raw.contains(" to ") && raw.contains(":")) {
+            contact = raw.substringAfter(" to ").substringBefore(":").trim()
+            message = raw.substringAfter(":").trim()
+        } else if (raw.contains(" message ") && raw.contains(" that ")) {
+            contact = raw.substringAfter(" message ").substringBefore(" that ").trim()
+            message = raw.substringAfter(" that ").trim()
+        } else {
+            val parts = raw.split(" ")
+            if (parts.size >= 3) {
+                contact = parts[1]
+                message = parts.drop(2).joinToString(" ")
+            }
+        }
+        return Pair(contact, message)
+    }
+
+    private fun extractContactFromCallQuery(raw: String): String {
+        return raw.replace("(?i)call to |call |ফোন করো |কল করো |ফোন দাও |কে কল করো".toRegex(), "").trim()
+    }
+
+    private fun extractContactFromQuery(raw: String): String {
+        return raw.replace("(?i)open |খোল |whatsapp |হোয়াটসঅ্যাপ |chat with |contact of |নাম্বার |number ".toRegex(), "").trim()
+    }
+
+    private fun extractSmsParameters(raw: String): Pair<String, String> {
+        val contact = if (raw.contains(" to ")) raw.substringAfter(" to ").substringBefore(":").trim() else "Contact"
+        val message = if (raw.contains(":")) raw.substringAfter(":").trim() else raw
+        return Pair(contact, message)
+    }
+
+    private fun extractAppNameFromOpenQuery(raw: String): String {
+        return raw.replace("(?i)open |খোল |চালু করো |launch ".toRegex(), "").trim()
+    }
+
+    private fun generateLocalIntentResponseText(intent: ToolIntent): String {
+        return when (intent.toolName) {
+            "open_app" -> "Opening ${intent.arguments["app_name"]}."
+            "send_whatsapp_message" -> "Preparing WhatsApp message for ${intent.arguments["contact_name"]}."
+            "open_whatsapp_chat" -> "Opening WhatsApp chat with ${intent.arguments["contact_name"]}."
+            "make_phone_call" -> "Initiating call to ${intent.arguments["contact_name"]}."
+            "send_sms" -> "Drafting SMS to ${intent.arguments["recipient"]}."
+            "toggle_flashlight" -> "Adjusting device flashlight."
+            "get_device_status" -> "Checking device telemetry."
+            "press_back" -> "Going back."
+            "press_home" -> "Going home."
+            "read_screen" -> "Inspecting screen elements."
+            "search_web" -> "Searching web."
+            "security_audit_check" -> "Running security scan."
+            else -> "Executing ${intent.toolName}."
+        }
     }
 }
 
 /**
- * Gemini Cloud Teacher: Deep reasoning, tool refinement, knowledge supervisor.
- * Securely uses runtime custom API key or BuildConfig.GEMINI_API_KEY.
+ * Gemini Model Provider: The Cloud AI Brain.
+ * Produces structured tool calls for phone operations.
  */
 class GeminiModelProvider : ModelProvider {
     var runtimeApiKey: String = ""
     var selectedModel: String = "gemini-3.5-flash"
     var temperature: Float = 0.4f
-    var customSystemPrompt: String = "You are JARVIS's Cloud Teacher Supervisor. Provide concise, accurate answers for an Android assistant. Format device commands clearly."
+    var customSystemPrompt: String = ToolDefinitions.generateSystemPromptToolDescriptions()
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(25, TimeUnit.SECONDS)
@@ -301,20 +358,19 @@ class GeminiModelProvider : ModelProvider {
         val model = selectedModel.ifEmpty { "gemini-3.5-flash" }
 
         if (apiKey.isBlank()) {
-            // Graceful fallback simulation if user hasn't set custom key
-            delay(200)
+            delay(150)
             val fallbackLatency = System.currentTimeMillis() - startTime
             return@withContext ModelResponse(
-                text = "Gemini Teacher Supervisor [Simulation]: Analyzed prompt \"$prompt\". No active Gemini API key detected. You can enter your API Key in the MODELS tab or App Settings for live cloud responses.",
+                text = "Gemini Cloud Teacher: No active API key entered in settings. Enter your key in the Models tab for live Cloud reasoning.",
                 latencyMs = fallbackLatency,
                 providerType = "GEMINI (Simulation)",
-                confidence = 0.99f,
+                confidence = 0.90f,
                 isTeacherTrained = false
             )
         }
 
         try {
-            val systemInstruction = customSystemPrompt
+            val systemInstruction = ToolDefinitions.generateSystemPromptToolDescriptions()
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
 
             val jsonBody = JSONObject().apply {
@@ -322,7 +378,7 @@ class GeminiModelProvider : ModelProvider {
                     put(JSONObject().apply {
                         put("parts", JSONArray().apply {
                             put(JSONObject().apply {
-                                put("text", "$systemInstruction\nUser Query: $prompt")
+                                put("text", "$systemInstruction\n\nUser Request: $prompt")
                             })
                         })
                     })
@@ -349,13 +405,29 @@ class GeminiModelProvider : ModelProvider {
                     ?.optJSONObject("content")
                     ?.optJSONArray("parts")
                     ?.optJSONObject(0)
-                    ?.optString("text") ?: "No output received from Gemini."
+                    ?.optString("text") ?: ""
+
+                // Extract structured tool intent if present in JSON format
+                val toolIntent = parseToolIntentFromJson(text)
+
+                val displayableText = if (toolIntent != null) {
+                    when (toolIntent.toolName) {
+                        "open_app" -> "Opening ${toolIntent.arguments["app_name"]}."
+                        "send_whatsapp_message" -> "Preparing WhatsApp message for ${toolIntent.arguments["contact_name"]}."
+                        "make_phone_call" -> "Initiating call to ${toolIntent.arguments["contact_name"]}."
+                        "send_sms" -> "Drafting SMS to ${toolIntent.arguments["recipient"]}."
+                        else -> "Executing action: ${toolIntent.toolName}"
+                    }
+                } else {
+                    text.trim()
+                }
 
                 ModelResponse(
-                    text = text.trim(),
+                    text = displayableText,
                     latencyMs = latency,
                     providerType = "GEMINI (${model})",
                     confidence = 0.98f,
+                    toolIntent = toolIntent,
                     isTeacherTrained = true
                 )
             } else {
@@ -366,7 +438,7 @@ class GeminiModelProvider : ModelProvider {
                     "HTTP ${response.code}"
                 }
                 ModelResponse(
-                    text = "Gemini Cloud Error ($model): $errorMsg. Falling back to local offline reasoning.",
+                    text = "Gemini Cloud Error ($model): $errorMsg. Falling back to local brain.",
                     latencyMs = latency,
                     providerType = "GEMINI (Fallback)",
                     confidence = 0.40f
@@ -375,11 +447,52 @@ class GeminiModelProvider : ModelProvider {
         } catch (e: Exception) {
             val latency = System.currentTimeMillis() - startTime
             ModelResponse(
-                text = "Network offline or Gemini request timed out (${e.localizedMessage}). Local offline brain active.",
+                text = "Network unreachable (${e.localizedMessage}). Local offline brain active.",
                 latencyMs = latency,
                 providerType = "LOCAL (Offline Fallback)",
                 confidence = 0.70f
             )
+        }
+    }
+
+    private fun parseToolIntentFromJson(rawText: String): ToolIntent? {
+        try {
+            val jsonCandidate = when {
+                rawText.contains("```json") -> {
+                    rawText.substringAfter("```json").substringBefore("```").trim()
+                }
+                rawText.contains("```") -> {
+                    rawText.substringAfter("```").substringBefore("```").trim()
+                }
+                rawText.contains("{") && rawText.contains("}") -> {
+                    val start = rawText.indexOf("{")
+                    val end = rawText.lastIndexOf("}") + 1
+                    rawText.substring(start, end)
+                }
+                else -> null
+            } ?: return null
+
+            val json = JSONObject(jsonCandidate)
+            val toolName = json.optString("tool").ifEmpty { json.optString("tool_name") }
+            if (toolName.isBlank()) return null
+
+            val argsObj = json.optJSONObject("arguments") ?: JSONObject()
+            val argsMap = mutableMapOf<String, String>()
+            val keys = argsObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                argsMap[key] = argsObj.optString(key)
+            }
+
+            val risk = json.optString("risk_level", "MEDIUM")
+            return ToolIntent(
+                toolName = toolName,
+                arguments = argsMap,
+                riskLevel = risk,
+                rationale = "Generated by Gemini Reasoning Brain"
+            )
+        } catch (e: Exception) {
+            return null
         }
     }
 }
@@ -398,30 +511,38 @@ class HybridModelProvider(
         language: String
     ): ModelResponse {
         val lower = prompt.lowercase()
-        // Commands that must always execute locally
+
+        // Explicit local operations that don't need cloud latency
         val isExplicitLocal = lower.contains("flashlight") ||
                 lower.startsWith("open ") ||
+                lower.startsWith("খোল ") ||
                 lower.contains("battery") ||
+                lower.contains("চার্জ") ||
                 lower.startsWith("call ") ||
-                lower.startsWith("send message") ||
-                lower.contains("security")
+                lower.startsWith("কল ") ||
+                lower.startsWith("phone ") ||
+                lower.contains("whatsapp") ||
+                lower.contains("security") ||
+                lower == "back" || lower == "home"
 
         val isExplicitCloud = lower.contains("search web") ||
                 lower.contains("today's news") ||
                 lower.contains("ask gemini") ||
-                lower.contains("cloud teacher")
+                lower.contains("explain ") ||
+                lower.contains("why ") ||
+                lower.contains("how ")
 
         if (isExplicitLocal && !isExplicitCloud) {
-            return localProvider.generateResponse(prompt, contextChunks, language)
+            val local = localProvider.generateResponse(prompt, contextChunks, language)
+            if (local.toolIntent != null) return local
         }
 
         val localResult = localProvider.generateResponse(prompt, contextChunks, language)
-        // If local model is confident or executed a tool, return it
-        if (localResult.confidence >= 0.80f && !isExplicitCloud) {
+        if (localResult.confidence >= 0.85f && !isExplicitCloud) {
             return localResult
         }
 
-        // Otherwise escalate to Gemini Teacher
+        // Escalate to Gemini Brain
         val cloudResult = geminiProvider.generateResponse(prompt, contextChunks, language)
         return if (cloudResult.confidence > 0.50f) cloudResult else localResult
     }

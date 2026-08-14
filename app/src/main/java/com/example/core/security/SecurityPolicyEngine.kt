@@ -92,8 +92,14 @@ object SecurityPolicyEngine {
      */
     fun evaluateToolRisk(toolName: String, args: Map<String, String>): SkillRiskLevel {
         return when (toolName) {
-            "open_app", "toggle_flashlight", "query_battery_status", "search_knowledge_rag", "security_audit_check" -> SkillRiskLevel.LOW
-            "make_call", "send_message", "web_search", "clipboard_copy" -> SkillRiskLevel.MEDIUM
+            "open_app", "close_app", "press_back", "press_home", "read_screen", "find_text",
+            "scroll", "get_current_app", "get_device_status", "query_battery_status",
+            "toggle_flashlight", "clipboard_copy", "security_audit_check", "get_contacts",
+            "open_settings", "open_whatsapp_chat", "take_screenshot", "read_notifications" -> SkillRiskLevel.LOW
+
+            "make_phone_call", "make_call", "send_sms", "send_message", "send_whatsapp_message",
+            "tap", "long_press", "swipe", "type_text", "search_web" -> SkillRiskLevel.MEDIUM
+
             "delete_memory", "clear_database", "install_app" -> SkillRiskLevel.HIGH
             "modify_security_policy", "credential_operation", "system_wipe" -> SkillRiskLevel.CRITICAL
             else -> SkillRiskLevel.MEDIUM

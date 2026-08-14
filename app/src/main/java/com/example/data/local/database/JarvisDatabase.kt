@@ -64,7 +64,7 @@ abstract class JarvisDatabase : RoomDatabase() {
         }
 
         private suspend fun populateInitialData(dao: JarvisDao) {
-            // Seed Core Skills
+            // Seed Full Suite of Skills & Tools
             val initialSkills = listOf(
                 SkillEntity(
                     name = "open_app",
@@ -75,7 +75,117 @@ abstract class JarvisDatabase : RoomDatabase() {
                     riskLevel = SkillRiskLevel.LOW,
                     procedure = "1. Resolve app package via PackageManager\n2. Create Launch Intent\n3. Start Activity with FLAG_ACTIVITY_NEW_TASK\n4. Verify foreground transition",
                     verificationMethod = "PackageManager query and activity launch verification",
-                    version = "1.0.0"
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "send_whatsapp_message",
+                    description = "Resolves contact and sends a WhatsApp message using legitimate Android mechanism.",
+                    requiredPermissions = "READ_CONTACTS",
+                    inputSchema = "{\"contact_name\": \"string\", \"message\": \"string\"}",
+                    outputSchema = "{\"status\": \"string\", \"sent\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.MEDIUM,
+                    procedure = "1. Search contacts\n2. Verify single recipient\n3. Launch WhatsApp deep link\n4. Require confirmation if enabled",
+                    verificationMethod = "WhatsApp client launch verification",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "open_whatsapp_chat",
+                    description = "Opens WhatsApp conversation directly for a given contact or number.",
+                    requiredPermissions = "READ_CONTACTS",
+                    inputSchema = "{\"contact_name\": \"string\"}",
+                    outputSchema = "{\"opened\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.LOW,
+                    procedure = "1. Resolve contact\n2. Open WhatsApp conversation URI",
+                    verificationMethod = "Activity launch verification",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "make_phone_call",
+                    description = "Initiates outgoing phone call using legitimate telephony APIs.",
+                    requiredPermissions = "CALL_PHONE, READ_CONTACTS",
+                    inputSchema = "{\"contact_name\": \"string\"}",
+                    outputSchema = "{\"status\": \"string\", \"called\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.MEDIUM,
+                    procedure = "1. Resolve contact\n2. Ask confirmation\n3. Launch CALL_PHONE or DIAL intent\n4. Verify dialer state",
+                    verificationMethod = "Telephony state verification",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "send_sms",
+                    description = "Prepares and sends an SMS text message to a contact.",
+                    requiredPermissions = "SEND_SMS, READ_CONTACTS",
+                    inputSchema = "{\"recipient\": \"string\", \"message\": \"string\"}",
+                    outputSchema = "{\"status\": \"string\", \"sent\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.MEDIUM,
+                    procedure = "1. Resolve contact number\n2. Prompt confirmation\n3. Dispatch SMS intent\n4. Verify delivery buffer",
+                    verificationMethod = "SMS Intent dispatch verification",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "get_contacts",
+                    description = "Queries local Android contacts safely without inventing phone numbers.",
+                    requiredPermissions = "READ_CONTACTS",
+                    inputSchema = "{\"name_query\": \"string\"}",
+                    outputSchema = "{\"contacts\": \"list<ContactInfo>\"}",
+                    riskLevel = SkillRiskLevel.LOW,
+                    procedure = "1. Query ContactsContract.CommonDataKinds.Phone\n2. Filter exact or fuzzy matches\n3. Return authentic results",
+                    verificationMethod = "ContentResolver cursor validation",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "read_screen",
+                    description = "Extracts UI hierarchy and visible text elements via AccessibilityService.",
+                    requiredPermissions = "AccessibilityService",
+                    inputSchema = "{}",
+                    outputSchema = "{\"elements\": \"list<VisibleElement>\", \"current_app\": \"string\"}",
+                    riskLevel = SkillRiskLevel.LOW,
+                    procedure = "1. Query rootInActiveWindow\n2. Traverse view hierarchy\n3. Extract visible text nodes",
+                    verificationMethod = "Accessibility node tree verification",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "tap",
+                    description = "Taps or clicks a UI element on screen by text or view ID.",
+                    requiredPermissions = "AccessibilityService",
+                    inputSchema = "{\"target_text\": \"string\"}",
+                    outputSchema = "{\"success\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.MEDIUM,
+                    procedure = "1. Search active window for text\n2. Perform ACTION_CLICK\n3. Verify click event",
+                    verificationMethod = "AccessibilityNodeInfo.performAction result",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "scroll",
+                    description = "Scrolls active view forward or backward.",
+                    requiredPermissions = "AccessibilityService",
+                    inputSchema = "{\"direction\": \"FORWARD | BACKWARD\"}",
+                    outputSchema = "{\"scrolled\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.LOW,
+                    procedure = "1. Locate scrollable node\n2. Perform ACTION_SCROLL",
+                    verificationMethod = "Scroll action outcome",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "press_back",
+                    description = "Performs global Android Back navigation.",
+                    requiredPermissions = "AccessibilityService",
+                    inputSchema = "{}",
+                    outputSchema = "{\"success\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.LOW,
+                    procedure = "1. Call performGlobalAction(GLOBAL_ACTION_BACK)",
+                    verificationMethod = "Accessibility global action result",
+                    version = "1.1.0"
+                ),
+                SkillEntity(
+                    name = "press_home",
+                    description = "Navigates to the Android Home launcher screen.",
+                    requiredPermissions = "None",
+                    inputSchema = "{}",
+                    outputSchema = "{\"success\": \"boolean\"}",
+                    riskLevel = SkillRiskLevel.LOW,
+                    procedure = "1. Call GLOBAL_ACTION_HOME or start Home Intent",
+                    verificationMethod = "Home launcher verification",
+                    version = "1.1.0"
                 ),
                 SkillEntity(
                     name = "toggle_flashlight",
@@ -86,62 +196,40 @@ abstract class JarvisDatabase : RoomDatabase() {
                     riskLevel = SkillRiskLevel.LOW,
                     procedure = "1. Access CameraManager\n2. Locate rear camera ID with FLASH_INFO_AVAILABLE\n3. Call setTorchMode(cameraId, state)\n4. Confirm torch state callback",
                     verificationMethod = "CameraManager.TorchCallback status",
-                    version = "1.0.0"
+                    version = "1.1.0"
                 ),
                 SkillEntity(
-                    name = "query_battery_status",
-                    description = "Retrieves battery level, charging status, and thermal health.",
+                    name = "get_device_status",
+                    description = "Retrieves battery level, charging status, active app, and thermals.",
                     requiredPermissions = "None",
                     inputSchema = "{}",
-                    outputSchema = "{\"level\": \"int\", \"isCharging\": \"boolean\", \"health\": \"string\"}",
+                    outputSchema = "{\"battery\": \"string\", \"charging\": \"boolean\", \"temp\": \"string\"}",
                     riskLevel = SkillRiskLevel.LOW,
-                    procedure = "1. Register sticky receiver for Intent.ACTION_BATTERY_CHANGED\n2. Parse EXTRA_LEVEL, EXTRA_SCALE, and EXTRA_STATUS\n3. Format battery diagnostic metrics",
+                    procedure = "1. Register Intent.ACTION_BATTERY_CHANGED\n2. Query thermal and app telemetry",
                     verificationMethod = "BatteryManager intent validation",
-                    version = "1.0.0"
+                    version = "1.1.0"
                 ),
                 SkillEntity(
-                    name = "make_call",
-                    description = "Prepares and opens the system dialer for a specified contact or phone number.",
-                    requiredPermissions = "None (Intent.ACTION_DIAL) / CALL_PHONE (Direct)",
-                    inputSchema = "{\"contact_name\": \"string\", \"phone_number\": \"string\"}",
-                    outputSchema = "{\"status\": \"string\", \"dialed\": \"boolean\"}",
-                    riskLevel = SkillRiskLevel.MEDIUM,
-                    procedure = "1. Verify phone number syntax\n2. Require user confirmation if direct dial requested\n3. Launch Intent.ACTION_DIAL with tel: uri\n4. Return success status",
-                    verificationMethod = "Dialer intent launch confirmation",
-                    version = "1.0.0"
-                ),
-                SkillEntity(
-                    name = "send_message",
-                    description = "Prepares an SMS or messaging draft to the target recipient.",
-                    requiredPermissions = "None (Intent.ACTION_SENDTO)",
-                    inputSchema = "{\"recipient\": \"string\", \"message\": \"string\"}",
-                    outputSchema = "{\"status\": \"string\", \"draftCreated\": \"boolean\"}",
-                    riskLevel = SkillRiskLevel.MEDIUM,
-                    procedure = "1. Validate recipient contact\n2. Check message content for high-risk data\n3. Launch SMS intent with pre-filled body\n4. Ask confirmation before transmission",
-                    verificationMethod = "Intent dispatcher result",
-                    version = "1.0.0"
-                ),
-                SkillEntity(
-                    name = "search_knowledge_rag",
-                    description = "Executes local offline RAG vector & keyword similarity search across indexed documents.",
+                    name = "search_web",
+                    description = "Launches web search in default browser for given query.",
                     requiredPermissions = "None",
-                    inputSchema = "{\"query\": \"string\", \"top_k\": \"int\"}",
-                    outputSchema = "{\"results\": \"list<KnowledgeChunk>\", \"match_score\": \"float\"}",
+                    inputSchema = "{\"query\": \"string\"}",
+                    outputSchema = "{\"searched\": \"boolean\"}",
                     riskLevel = SkillRiskLevel.LOW,
-                    procedure = "1. Sanitize query\n2. Compute text cosine similarity and token overlaps\n3. Retrieve top-k context chunks\n4. Inject into local prompt context",
-                    verificationMethod = "Score threshold check (>0.65)",
-                    version = "1.0.0"
+                    procedure = "1. Encode query\n2. Open browser with search URL",
+                    verificationMethod = "Browser intent verification",
+                    version = "1.1.0"
                 ),
                 SkillEntity(
                     name = "security_audit_check",
-                    description = "Runs a full audit of device permissions, prompt sanitization, and app integrity.",
+                    description = "Runs a defensive audit of permissions, prompt injection shield, and sandboxing.",
                     requiredPermissions = "None",
                     inputSchema = "{}",
                     outputSchema = "{\"risk_score\": \"int\", \"vulnerabilities\": \"list\"}",
                     riskLevel = SkillRiskLevel.LOW,
-                    procedure = "1. Query active permissions\n2. Inspect database integrity\n3. Scan prompt injection quarantine\n4. Generate defensive security report",
-                    verificationMethod = "SecurityMonitor verification",
-                    version = "1.0.0"
+                    procedure = "1. Query active permissions\n2. Inspect prompt quarantine\n3. Validate sandboxed tool controller",
+                    verificationMethod = "SecurityPolicyEngine verification",
+                    version = "1.1.0"
                 )
             )
             dao.insertSkills(initialSkills)
@@ -194,10 +282,10 @@ abstract class JarvisDatabase : RoomDatabase() {
                     tags = "wake-word, audio, android-policy, permissions, security"
                 ),
                 KnowledgeChunkEntity(
-                    title = "Teacher-Student Continuous Learning Protocol",
-                    sourceDocument = "learning_pipeline.md",
-                    content = "When local model confidence < 0.65 or a complex skill is required, JARVIS routes the request to Gemini Cloud Supervisor. The returned reasoning is validated against safety rules, extracted into structured Skill/Knowledge items, and cached locally for subsequent 100% offline local execution.",
-                    tags = "teacher-student, gemini, self-learning, offline, lora"
+                    title = "Tool Calling & Action Execution Architecture",
+                    sourceDocument = "tool_architecture.md",
+                    content = "The AI model is strictly the BRAIN and never touches the phone directly. User natural language is converted into structured tool calls (e.g. send_whatsapp_message, make_phone_call, open_app). The Android Controller validates risk, confirms if needed, runs the real Android API, and returns execution result to the assistant before vocalizing completion.",
+                    tags = "tool-calling, security, whatsapp, android-hands"
                 )
             )
             dao.insertKnowledgeChunks(initialKnowledge)
@@ -208,7 +296,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                     eventType = "SYSTEM_INITIALIZED",
                     riskScore = 0,
                     source = "JarvisSecurityMonitor",
-                    description = "Defensive Security Engine online. Prompt injection guard active. Local storage encrypted.",
+                    description = "Defensive Security Engine online. Prompt injection guard active. Local storage encrypted. Tool sandboxing ready.",
                     actionTaken = "Security Baseline Established",
                     isResolved = true
                 )
@@ -218,9 +306,9 @@ abstract class JarvisDatabase : RoomDatabase() {
             dao.insertChatMessage(
                 ChatMessageEntity(
                     role = "JARVIS",
-                    message = "Greetings. I am JARVIS, your privacy-first, local-first Android AI assistant. All core tools, memory, and security modules are operational. How may I assist you today?",
+                    message = "Greetings. I am JARVIS, your privacy-first, local-first Android AI assistant. AI brain and Android hands are synchronized. Speak or type your request.",
                     providerType = "LOCAL",
-                    latencyMs = 12
+                    latencyMs = 8
                 )
             )
         }

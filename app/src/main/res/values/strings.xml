@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">JARVIS</string>
+    <string name="accessibility_service_description">JARVIS Neural Accessibility Controller: Inspects screen UI elements, assists with user-authorized navigation, taps, and messaging operations under user control.</string>
 </resources>
