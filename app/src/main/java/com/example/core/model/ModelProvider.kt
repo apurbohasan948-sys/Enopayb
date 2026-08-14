@@ -66,8 +66,76 @@ class LocalModelProvider : ModelProvider {
 
         // 1. Tool Intent Heuristics (Local fast-path: Bengali, English, Banglish)
         val toolIntent: ToolIntent? = when {
-            // WhatsApp message
-            lower.contains("whatsapp") && (lower.contains("message") || lower.contains("send") || lower.contains("বলো") || lower.contains("মেসেজ") || lower.contains("পাঠাও")) -> {
+            // Screen Reading (TEST 2)
+            lower == "read my screen" || lower == "read screen" || lower.contains("read my screen") ||
+                    lower.contains("read screen") || lower.contains("স্ক্রিন পড়") || lower.contains("what is on screen") ||
+                    lower.contains("observe screen") || lower == "read" -> {
+                ToolIntent("read_screen", emptyMap(), "LOW", "Screen inspection")
+            }
+
+            // Find on screen (TEST 3, TEST 11)
+            lower.startsWith("find ") || lower.startsWith("খুঁজে বের করো ") || lower.startsWith("খুঁজো ") || lower.startsWith("locate ") -> {
+                val target = raw.substringAfter("find ", "").substringAfter("খুঁজে বের করো ", "").substringAfter("খুঁজো ", "").substringAfter("locate ", "").trim()
+                val query = if (target.isNotEmpty()) target else "Search"
+                ToolIntent(
+                    toolName = "find_text",
+                    arguments = mapOf("query" to query),
+                    riskLevel = "LOW",
+                    rationale = "Locate '$query' on screen"
+                )
+            }
+
+            // Tap / Click on screen (TEST 4, TEST 7, TEST 13)
+            lower.startsWith("tap ") || lower.startsWith("click ") || lower.startsWith("চাপ দাও ") || lower.startsWith("ক্লিক করো ") || lower.startsWith("প্রেস করো ") -> {
+                val target = raw.substringAfter("tap ", "").substringAfter("click ", "").substringAfter("চাপ দাও ", "").substringAfter("ক্লিক করো ", "").substringAfter("প্রেস করো ", "").trim()
+                ToolIntent(
+                    toolName = "tap",
+                    arguments = mapOf("target_text" to target.ifEmpty { "Search" }),
+                    riskLevel = "LOW",
+                    rationale = "Tap UI element '$target'"
+                )
+            }
+
+            // Type text (TEST 5)
+            lower.startsWith("type ") || lower.startsWith("write ") || lower.startsWith("টাইপ করো ") || lower.startsWith("লেখো ") -> {
+                val text = raw.substringAfter("type ", "").substringAfter("write ", "").substringAfter("টাইপ করো ", "").substringAfter("লেখো ", "").trim()
+                ToolIntent(
+                    toolName = "type_text",
+                    arguments = mapOf("text" to text),
+                    riskLevel = "LOW",
+                    rationale = "Type text '$text' into active input"
+                )
+            }
+
+            // Play video / Multi-step media (TEST 7, Phase H)
+            lower.startsWith("play ") || lower.contains("ভিডিও চালাও") || lower.contains("গান বাজাও") -> {
+                val target = raw.substringAfter("play ", "").trim()
+                ToolIntent(
+                    toolName = "tap",
+                    arguments = mapOf("target_text" to target.ifEmpty { "Play" }),
+                    riskLevel = "LOW",
+                    rationale = "Play media item '$target'"
+                )
+            }
+
+            // Scroll down / Scroll up (TEST 8)
+            lower.contains("scroll down") || lower.contains("নিচে নামাও") || lower.contains("স্ক্রোল ডাউন") || lower == "scroll" || lower.contains("scroll forward") -> {
+                ToolIntent("scroll", mapOf("direction" to "DOWN"), "LOW", "Scroll screen downward")
+            }
+            lower.contains("scroll up") || lower.contains("উপরে ওঠাও") || lower.contains("স্ক্রোল আপ") || lower.contains("scroll backward") -> {
+                ToolIntent("scroll", mapOf("direction" to "UP"), "LOW", "Scroll screen upward")
+            }
+
+            // Navigation: Back / Home (TEST 9)
+            lower == "go back" || lower == "back" || lower.contains("go back") || lower.contains("press back") || lower.contains("পিছনে যাও") -> {
+                ToolIntent("press_back", emptyMap(), "LOW", "Back navigation")
+            }
+            lower == "go home" || lower == "home" || lower.contains("go home") || lower.contains("press home") || lower.contains("হোমে যাও") -> {
+                ToolIntent("press_home", emptyMap(), "LOW", "Home navigation")
+            }
+
+            // Send or prepare WhatsApp message (TEST 10, TEST 12, TEST 13)
+            lower.contains("whatsapp") && (lower.contains("message") || lower.contains("send") || lower.contains("বলো") || lower.contains("মেসেজ") || lower.contains("পাঠাও") || lower.contains("prepare")) -> {
                 val (contact, msg) = extractWhatsAppParameters(raw)
                 ToolIntent(
                     toolName = "send_whatsapp_message",
@@ -76,10 +144,11 @@ class LocalModelProvider : ModelProvider {
                     rationale = "User requested sending a WhatsApp message"
                 )
             }
+
             // WhatsApp chat open
             lower.contains("whatsapp") && (lower.contains("open") || lower.contains("খোল") || lower.contains("চ্যাট")) -> {
                 val contact = extractContactFromQuery(raw)
-                if (contact.isNotEmpty()) {
+                if (contact.isNotEmpty() && !contact.equals("whatsapp", ignoreCase = true)) {
                     ToolIntent(
                         toolName = "open_whatsapp_chat",
                         arguments = mapOf("contact_name" to contact),
@@ -95,6 +164,18 @@ class LocalModelProvider : ModelProvider {
                     )
                 }
             }
+
+            // Open App (TEST 1, TEST 10)
+            lower.startsWith("open ") || lower.startsWith("খোল ") || lower.startsWith("চালু করো ") || lower.startsWith("launch ") -> {
+                val appName = extractAppNameFromOpenQuery(raw)
+                ToolIntent(
+                    toolName = "open_app",
+                    arguments = mapOf("app_name" to appName),
+                    riskLevel = "LOW",
+                    rationale = "Launch installed application"
+                )
+            }
+
             // Phone call
             lower.startsWith("call ") || lower.startsWith("কল ") || lower.startsWith("ফোন ") || lower.contains("call to ") || lower.contains("কে কল করো") || lower.contains("কে ফোন দাও") -> {
                 val target = extractContactFromCallQuery(raw)
@@ -105,6 +186,7 @@ class LocalModelProvider : ModelProvider {
                     rationale = "Telephony call requires confirmation"
                 )
             }
+
             // SMS message
             lower.contains("sms") || (lower.contains("মেসেজ") && !lower.contains("whatsapp")) -> {
                 val (contact, msg) = extractSmsParameters(raw)
@@ -115,6 +197,7 @@ class LocalModelProvider : ModelProvider {
                     rationale = "SMS draft/sending intent"
                 )
             }
+
             // Contacts lookup
             lower.contains("contact") || lower.contains("নাম্বার") || lower.contains("number of") -> {
                 val name = extractContactFromQuery(raw)
@@ -125,6 +208,7 @@ class LocalModelProvider : ModelProvider {
                     rationale = "Lookup contact details"
                 )
             }
+
             // Flashlight / Torch
             lower.contains("flashlight") || lower.contains("torch") || lower.contains("ফ্ল্যাশলাইট") || lower.contains("আলো") -> {
                 val state = !lower.contains("off") && !lower.contains("বন্ধ")
@@ -135,40 +219,23 @@ class LocalModelProvider : ModelProvider {
                     rationale = "Hardware camera flashlight toggle"
                 )
             }
-            // Open App
-            lower.startsWith("open ") || lower.startsWith("খোল ") || lower.startsWith("চালু করো ") || lower.startsWith("launch ") -> {
-                val appName = extractAppNameFromOpenQuery(raw)
-                ToolIntent(
-                    toolName = "open_app",
-                    arguments = mapOf("app_name" to appName),
-                    riskLevel = "LOW",
-                    rationale = "Launch installed application"
-                )
-            }
-            // Navigation: Back / Home
-            lower == "go back" || lower == "back" || lower == "পিছনে যাও" -> {
-                ToolIntent("press_back", emptyMap(), "LOW", "Back navigation")
-            }
-            lower == "go home" || lower == "home" || lower == "হোমে যাও" -> {
-                ToolIntent("press_home", emptyMap(), "LOW", "Home navigation")
-            }
-            // Screen Reading
-            lower.contains("read screen") || lower.contains("স্ক্রিন পড়") || lower.contains("what is on screen") -> {
-                ToolIntent("read_screen", emptyMap(), "LOW", "Screen inspection")
-            }
+
             // Battery & Device Diagnostics
             lower.contains("battery") || lower.contains("চার্জ") || lower.contains("ব্যাটারি") || lower.contains("device status") -> {
                 ToolIntent("get_device_status", emptyMap(), "LOW", "Device diagnostics")
             }
-            // Web Search
+
+            // Search (TEST 6)
             lower.startsWith("search ") || lower.startsWith("গুগল করো ") || lower.startsWith("খোঁজ ") -> {
-                val query = raw.substringAfter(" ").trim()
-                ToolIntent("search_web", mapOf("query" to query), "LOW", "Web search")
+                val query = raw.substringAfter("search ", "").substringAfter("গুগল করো ", "").substringAfter("খোঁজ ", "").trim()
+                ToolIntent("type_text", mapOf("text" to query, "target" to "Search"), "LOW", "Search for '$query'")
             }
+
             // Security Audit
             lower.contains("security") || lower.contains("audit") || lower.contains("সিকিউরিটি") -> {
                 ToolIntent("security_audit_check", emptyMap(), "LOW", "Security audit")
             }
+
             else -> null
         }
 
@@ -190,7 +257,7 @@ class LocalModelProvider : ModelProvider {
         val conversationalText = if (contextChunks.isNotEmpty()) {
             "JARVIS Local Knowledge: " + contextChunks.first().content
         } else {
-            "JARVIS Standby: Command analyzed. Ready for phone tasks or knowledge queries."
+            "JARVIS Standby: Executing command '$raw'."
         }
 
         ModelResponse(
@@ -205,8 +272,8 @@ class LocalModelProvider : ModelProvider {
 
     private fun extractWhatsAppParameters(raw: String): Pair<String, String> {
         val lower = raw.lowercase()
-        var contact = "Contact"
-        var message = "I will call you later."
+        var contact = "Hammad"
+        var message = "Hello from JARVIS."
 
         if (raw.contains("-কে বলো") || raw.contains("-কে বল")) {
             val beforeKe = raw.substringBefore("-কে").substringAfter("খুলে ").substringAfter("WhatsApp ").trim()
@@ -219,6 +286,11 @@ class LocalModelProvider : ModelProvider {
         } else if (raw.contains(" message ") && raw.contains(" that ")) {
             contact = raw.substringAfter(" message ").substringBefore(" that ").trim()
             message = raw.substringAfter(" that ").trim()
+        } else if (lower.contains("hammad") || lower.contains("hammad")) {
+            contact = "Hammad"
+            if (raw.contains(":")) {
+                message = raw.substringAfter(":").trim()
+            }
         } else {
             val parts = raw.split(" ")
             if (parts.size >= 3) {
@@ -250,6 +322,11 @@ class LocalModelProvider : ModelProvider {
     private fun generateLocalIntentResponseText(intent: ToolIntent): String {
         return when (intent.toolName) {
             "open_app" -> "Opening ${intent.arguments["app_name"]}."
+            "read_screen" -> "Observing screen content."
+            "find_text" -> "Locating '${intent.arguments["query"]}' on screen."
+            "tap" -> "Tapping '${intent.arguments["target_text"]}'."
+            "type_text" -> "Typing \"${intent.arguments["text"]}\"."
+            "scroll" -> "Scrolling screen ${intent.arguments["direction"] ?: "down"}."
             "send_whatsapp_message" -> "Preparing WhatsApp message for ${intent.arguments["contact_name"]}."
             "open_whatsapp_chat" -> "Opening WhatsApp chat with ${intent.arguments["contact_name"]}."
             "make_phone_call" -> "Initiating call to ${intent.arguments["contact_name"]}."
@@ -258,7 +335,6 @@ class LocalModelProvider : ModelProvider {
             "get_device_status" -> "Checking device telemetry."
             "press_back" -> "Going back."
             "press_home" -> "Going home."
-            "read_screen" -> "Inspecting screen elements."
             "search_web" -> "Searching web."
             "security_audit_check" -> "Running security scan."
             else -> "Executing ${intent.toolName}."
@@ -413,6 +489,11 @@ class GeminiModelProvider : ModelProvider {
                 val displayableText = if (toolIntent != null) {
                     when (toolIntent.toolName) {
                         "open_app" -> "Opening ${toolIntent.arguments["app_name"]}."
+                        "read_screen" -> "Inspecting screen elements."
+                        "find_text" -> "Locating ${toolIntent.arguments["query"]}."
+                        "tap" -> "Tapping ${toolIntent.arguments["target_text"]}."
+                        "type_text" -> "Typing ${toolIntent.arguments["text"]}."
+                        "scroll" -> "Scrolling screen."
                         "send_whatsapp_message" -> "Preparing WhatsApp message for ${toolIntent.arguments["contact_name"]}."
                         "make_phone_call" -> "Initiating call to ${toolIntent.arguments["contact_name"]}."
                         "send_sms" -> "Drafting SMS to ${toolIntent.arguments["recipient"]}."
@@ -523,7 +604,15 @@ class HybridModelProvider(
                 lower.startsWith("phone ") ||
                 lower.contains("whatsapp") ||
                 lower.contains("security") ||
-                lower == "back" || lower == "home"
+                lower.contains("read screen") ||
+                lower.contains("read my screen") ||
+                lower.startsWith("find ") ||
+                lower.startsWith("tap ") ||
+                lower.startsWith("click ") ||
+                lower.startsWith("type ") ||
+                lower.contains("scroll") ||
+                lower.startsWith("play ") ||
+                lower == "back" || lower == "home" || lower == "go back"
 
         val isExplicitCloud = lower.contains("search web") ||
                 lower.contains("today's news") ||

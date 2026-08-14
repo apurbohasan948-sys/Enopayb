@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.entity.SkillEntity
 import com.example.ui.JarvisViewModel
+import com.example.ui.components.AccessibilityDiagnosticsCard
 import com.example.ui.components.HologramCard
 import com.example.ui.components.RiskBadge
 import com.example.ui.components.StatusPill
@@ -88,6 +89,9 @@ fun SkillsScreen(
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            item {
+                AccessibilityDiagnosticsCard(viewModel = viewModel)
+            }
             items(skills) { skill ->
                 SkillCardItem(
                     skill = skill,

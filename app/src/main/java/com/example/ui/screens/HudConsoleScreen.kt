@@ -246,15 +246,22 @@ fun HudConsoleScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             val chips = listOf(
-                "WhatsApp Hammad" to "whatsapp_msg",
-                "Call Hammad" to "call_hammad",
-                "Open YouTube" to "open_yt",
-                "Read Screen" to "read_screen",
+                "TEST 1: Open YouTube" to "open_yt",
+                "TEST 2: Read Screen" to "read_screen",
+                "TEST 3: Find Search" to "find_search",
+                "TEST 4: Tap Search" to "tap_search",
+                "TEST 5: Type Tom and Jerry" to "type_tom_jerry",
+                "TEST 6: Search Tom and Jerry" to "search_tom_jerry",
+                "TEST 7: Play Tom and Jerry" to "play_result",
+                "TEST 8: Scroll Down" to "scroll_down",
+                "TEST 9: Go Back" to "go_back",
+                "TEST 10: Open WhatsApp" to "open_wa",
+                "TEST 11: Find Hammad" to "find_hammad",
+                "TEST 12: Prepare WA Msg" to "prep_wa",
+                "TEST 13: Send WA Msg" to "send_wa",
                 "Device Status" to "query_battery_status",
                 "Turn on Flashlight" to "toggle_flashlight",
-                "Security Audit" to "security_audit_check",
-                "হোয়াটসঅ্যাপ মেসেজ" to "bn_wa",
-                "বাংলা মোড" to "lang_bn"
+                "Security Audit" to "security_audit_check"
             )
             items(chips) { (label, tag) ->
                 Surface(
@@ -263,18 +270,22 @@ fun HudConsoleScreen(
                     border = BorderStroke(0.8.dp, JarvisCyan.copy(alpha = 0.35f)),
                     modifier = Modifier.clickable {
                         when (tag) {
-                            "whatsapp_msg" -> viewModel.sendUserPrompt("WhatsApp খুলে Hammad-কে বলো আমি পরে আসছি")
-                            "call_hammad" -> viewModel.sendUserPrompt("Call Hammad")
                             "open_yt" -> viewModel.sendUserPrompt("Open YouTube")
-                            "read_screen" -> viewModel.sendUserPrompt("Read screen")
-                            "bn_wa" -> {
-                                viewModel.setLanguage("BN")
-                                viewModel.sendUserPrompt("হোয়াটসঅ্যাপ এ Hammad কে মেসেজ দাও আমি ১০ মিনিট পরে আসব")
-                            }
-                            "lang_bn" -> {
-                                viewModel.setLanguage("BN")
-                                viewModel.sendUserPrompt("হ্যালো জারভিস, তুমি কি করতে পারো?")
-                            }
+                            "read_screen" -> viewModel.sendUserPrompt("Read my screen")
+                            "find_search" -> viewModel.sendUserPrompt("Find Search")
+                            "tap_search" -> viewModel.sendUserPrompt("Tap Search")
+                            "type_tom_jerry" -> viewModel.sendUserPrompt("Type Tom and Jerry")
+                            "search_tom_jerry" -> viewModel.sendUserPrompt("Search Tom and Jerry")
+                            "play_result" -> viewModel.sendUserPrompt("Play the first relevant result")
+                            "scroll_down" -> viewModel.sendUserPrompt("Scroll down")
+                            "go_back" -> viewModel.sendUserPrompt("Go back")
+                            "open_wa" -> viewModel.sendUserPrompt("Open WhatsApp")
+                            "find_hammad" -> viewModel.sendUserPrompt("Find Hammad")
+                            "prep_wa" -> viewModel.sendUserPrompt("Prepare a WhatsApp message for Hammad: I am reaching in 5 minutes")
+                            "send_wa" -> viewModel.sendUserPrompt("Send the message")
+                            "query_battery_status" -> viewModel.sendUserPrompt("Check battery status")
+                            "toggle_flashlight" -> viewModel.sendUserPrompt("Turn on flashlight")
+                            "security_audit_check" -> viewModel.runSecurityAudit()
                             else -> viewModel.sendUserPrompt(label)
                         }
                     }

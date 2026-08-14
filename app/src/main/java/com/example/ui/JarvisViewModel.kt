@@ -3,6 +3,9 @@ package com.example.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.core.accessibility.AccessibilityDiagnostics
+import com.example.core.accessibility.JarvisAccessibilityService
+import com.example.core.agent.AgentController
 import com.example.core.learning.TeacherStudentPipeline
 import com.example.core.model.ActiveModelType
 import com.example.core.model.GeminiModelProvider
@@ -24,10 +27,10 @@ import com.example.data.local.entity.MemoryCategory
 import com.example.data.local.entity.MemoryEntity
 import com.example.data.local.entity.SecurityEventEntity
 import com.example.data.local.entity.SkillEntity
-import com.example.data.local.entity.SkillRiskLevel
 import com.example.data.local.preference.JarvisPreferences
 import com.example.data.repository.JarvisRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -61,6 +64,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     val voiceManager = VoiceManager(application)
     private val toolRouter = ToolRouter(application)
+    val agentController = AgentController(application, toolRouter)
 
     private val localProvider = LocalModelProvider()
     private val geminiProvider = GeminiModelProvider()
@@ -107,6 +111,11 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val _ragTestResults = MutableStateFlow<List<Pair<KnowledgeChunkEntity, Float>>>(emptyList())
     val ragTestResults: StateFlow<List<Pair<KnowledgeChunkEntity, Float>>> = _ragTestResults.asStateFlow()
 
+    private val _accessibilityDiagnostics = MutableStateFlow(
+        JarvisAccessibilityService.getDiagnostics(application)
+    )
+    val accessibilityDiagnostics: StateFlow<AccessibilityDiagnostics> = _accessibilityDiagnostics.asStateFlow()
+
     val voiceState: StateFlow<VoiceState> = voiceManager.voiceState
     val audioWaveLevel: StateFlow<Float> = voiceManager.audioWaveLevel
 
@@ -130,6 +139,11 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     init {
         voiceManager.currentLanguage = _currentLanguage.value
         syncGeminiProviderSettings()
+        refreshAccessibilityDiagnostics()
+    }
+
+    fun refreshAccessibilityDiagnostics() {
+        _accessibilityDiagnostics.value = JarvisAccessibilityService.getDiagnostics(getApplication())
     }
 
     private fun syncGeminiProviderSettings() {
@@ -209,7 +223,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Primary conversation and tool execution pipeline.
+     * Primary conversation and multi-step agent execution pipeline.
      */
     fun sendUserPrompt(rawText: String) {
         val trimmed = rawText.trim()
@@ -217,6 +231,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch {
             _isProcessing.value = true
+            refreshAccessibilityDiagnostics()
 
             // 1. Record User Message
             val userMsg = ChatMessageEntity(
@@ -261,12 +276,57 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
 
-            // 3. Local Offline RAG Search
+            // 3. Multi-Step Task Planner Check (PHASE H)
+            val multiStepPlan = AgentController.planTaskForQuery(trimmed)
+            if (multiStepPlan != null) {
+                val planNotice = "Executing Plan: ${multiStepPlan.goal} (${multiStepPlan.steps.size} steps)"
+                repository.insertChatMessage(
+                    ChatMessageEntity(
+                        role = "JARVIS",
+                        message = planNotice,
+                        providerType = "AGENT_PLANNER",
+                        toolCallInfo = "multi_step_executor"
+                    )
+                )
+                voiceManager.speak(planNotice)
+
+                val summary = agentController.executeTaskPlan(multiStepPlan) { stepUpdate ->
+                    viewModelScope.launch {
+                        repository.insertChatMessage(
+                            ChatMessageEntity(
+                                role = "AGENT",
+                                message = stepUpdate,
+                                providerType = "AGENT_CONTROLLER"
+                            )
+                        )
+                    }
+                }
+
+                refreshAccessibilityDiagnostics()
+                val finishMsg = if (summary.success) {
+                    "Plan Completed Successfully: ${summary.goal} (${summary.completedSteps}/${summary.totalSteps} steps verified)."
+                } else {
+                    "Plan Execution Halted: ${summary.finalOutput}"
+                }
+
+                repository.insertChatMessage(
+                    ChatMessageEntity(
+                        role = "JARVIS",
+                        message = finishMsg,
+                        providerType = "AGENT_CONTROLLER"
+                    )
+                )
+                voiceManager.speak(finishMsg)
+                _isProcessing.value = false
+                return@launch
+            }
+
+            // 4. Local Offline RAG Search
             val currentChunks = allKnowledgeChunks.value
             val relevant = RagEngine.findRelevantChunks(trimmed, currentChunks, topK = 2)
             val matchedContext = relevant.map { it.first }
 
-            // 4. Invoke Active Model Provider
+            // 5. Invoke Active Model Provider
             val provider: ModelProvider = when (_activeModelType.value) {
                 ActiveModelType.LOCAL_GGUF_CPU -> localProvider
                 ActiveModelType.GEMINI_CLOUD_TEACHER -> geminiProvider
@@ -279,7 +339,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 language = _currentLanguage.value
             )
 
-            // 5. Handle Tool Planning & Execution
+            // 6. Handle Tool Planning & Execution with Screen Verification (PHASE G & I)
             if (response.toolIntent != null) {
                 val intent = response.toolIntent
                 val risk = SecurityPolicyEngine.evaluateToolRisk(intent.toolName, intent.arguments)
@@ -300,12 +360,13 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     _isProcessing.value = false
                     return@launch
                 } else {
-                    // Safe execution
+                    // Safe execution with verification
                     val toolResult = toolRouter.executeTool(intent)
                     _lastExecutionResult.value = toolResult
                     repository.incrementSkillUsage(intent.toolName)
+                    refreshAccessibilityDiagnostics()
 
-                    val replyWithTool = "${response.text}\n[Tool ${intent.toolName}: ${if (toolResult.success) "SUCCESS" else "FAILED"}]"
+                    val replyWithTool = "${response.text}\n[Tool ${intent.toolName}: ${if (toolResult.success) "SUCCESS" else "FAILED"}]\nEvidence: ${toolResult.evidence ?: toolResult.output}"
                     repository.insertChatMessage(
                         ChatMessageEntity(
                             role = "JARVIS",
@@ -329,7 +390,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 voiceManager.speak(response.text)
 
-                // 6. Teacher -> Student Learning Pipeline
+                // 7. Teacher -> Student Learning Pipeline
                 if (response.isTeacherTrained && response.confidence >= 0.90f) {
                     val candidate = TeacherStudentPipeline.processTeacherResponse(trimmed, response.text)
                     if (candidate != null) {
@@ -360,8 +421,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             val result = toolRouter.executeTool(intent)
             _lastExecutionResult.value = result
             repository.incrementSkillUsage(intent.toolName)
+            refreshAccessibilityDiagnostics()
 
-            val text = "Authorized execution of ${intent.toolName}: ${result.output}"
+            val text = "Authorized execution of ${intent.toolName}: ${result.output}\nEvidence: ${result.evidence ?: "Completed"}"
             repository.insertChatMessage(
                 ChatMessageEntity(
                     role = "TOOL",
@@ -385,6 +447,98 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 )
             )
             voiceManager.speak(text)
+        }
+    }
+
+    // === Direct Accessibility Diagnostics & Diagnostic Tests (PHASE A) ===
+
+    fun testReadScreen() {
+        viewModelScope.launch {
+            val result = toolRouter.executeTool(ToolIntent("read_screen", emptyMap(), "LOW"))
+            _lastExecutionResult.value = result
+            refreshAccessibilityDiagnostics()
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "DIAGNOSTIC",
+                    message = "[TEST: READ SCREEN]\n${result.output}",
+                    providerType = "ACCESSIBILITY_SERVICE"
+                )
+            )
+            voiceManager.speak("Screen inspected. Found ${_accessibilityDiagnostics.value.totalNodes} elements.")
+        }
+    }
+
+    fun testClickElement(target: String = "Search") {
+        viewModelScope.launch {
+            val result = toolRouter.executeTool(ToolIntent("tap", mapOf("target_text" to target), "LOW"))
+            _lastExecutionResult.value = result
+            refreshAccessibilityDiagnostics()
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "DIAGNOSTIC",
+                    message = "[TEST: CLICK TARGET '$target']\nSuccess: ${result.success}\nEvidence: ${result.evidence ?: result.output}",
+                    providerType = "ACCESSIBILITY_SERVICE"
+                )
+            )
+        }
+    }
+
+    fun testTypeText(text: String = "Tom and Jerry") {
+        viewModelScope.launch {
+            val result = toolRouter.executeTool(ToolIntent("type_text", mapOf("text" to text), "LOW"))
+            _lastExecutionResult.value = result
+            refreshAccessibilityDiagnostics()
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "DIAGNOSTIC",
+                    message = "[TEST: TYPE TEXT \"$text\"]\nSuccess: ${result.success}\nDetails: ${result.evidence ?: result.output}",
+                    providerType = "ACCESSIBILITY_SERVICE"
+                )
+            )
+        }
+    }
+
+    fun testScrollScreen(forward: Boolean = true) {
+        viewModelScope.launch {
+            val result = toolRouter.executeTool(ToolIntent("scroll", mapOf("direction" to if (forward) "DOWN" else "UP"), "LOW"))
+            _lastExecutionResult.value = result
+            refreshAccessibilityDiagnostics()
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "DIAGNOSTIC",
+                    message = "[TEST: SCROLL ${if (forward) "DOWN" else "UP"}]\nSuccess: ${result.success}\nDetails: ${result.evidence ?: result.output}",
+                    providerType = "ACCESSIBILITY_SERVICE"
+                )
+            )
+        }
+    }
+
+    fun testPressBack() {
+        viewModelScope.launch {
+            val result = toolRouter.executeTool(ToolIntent("press_back", emptyMap(), "LOW"))
+            _lastExecutionResult.value = result
+            refreshAccessibilityDiagnostics()
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "DIAGNOSTIC",
+                    message = "[TEST: BACK NAVIGATION]\nSuccess: ${result.success}",
+                    providerType = "ACCESSIBILITY_SERVICE"
+                )
+            )
+        }
+    }
+
+    fun runSecurityAudit() {
+        viewModelScope.launch {
+            val result = toolRouter.executeTool(ToolIntent("security_audit_check", emptyMap(), "LOW"))
+            _lastExecutionResult.value = result
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "SECURITY",
+                    message = result.output,
+                    providerType = "DEFENSE_SHIELD"
+                )
+            )
         }
     }
 
@@ -449,44 +603,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun importBrain(jsonStr: String, onComplete: (Int) -> Unit) {
+    fun importBrain(jsonStr: String, onImported: (Int) -> Unit) {
         viewModelScope.launch {
             val count = repository.importBrainJson(jsonStr)
-            onComplete(count)
+            onImported(count)
         }
-    }
-
-    // === Direct Tools Shortcut ===
-    fun toggleFlashlightManual(state: Boolean) {
-        viewModelScope.launch {
-            val res = toolRouter.executeTool(
-                ToolIntent("toggle_flashlight", mapOf("state" to state.toString()))
-            )
-            _lastExecutionResult.value = res
-        }
-    }
-
-    fun runSecurityAudit() {
-        viewModelScope.launch {
-            val res = toolRouter.executeTool(
-                ToolIntent("security_audit_check", emptyMap())
-            )
-            _lastExecutionResult.value = res
-            repository.insertSecurityEvent(
-                SecurityEventEntity(
-                    eventType = "MANUAL_SECURITY_AUDIT",
-                    riskScore = 0,
-                    source = "SecurityDashboard",
-                    description = res.output,
-                    actionTaken = "Audit Passed",
-                    isResolved = true
-                )
-            )
-        }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        voiceManager.shutdown()
     }
 }
