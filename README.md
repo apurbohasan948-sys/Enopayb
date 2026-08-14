@@ -22,7 +22,23 @@
 
 ---
 
-## 🚀 Building & Exporting the APK
+## 🤖 Automatic GitHub APK Builds (CI/CD)
+
+This repository comes pre-configured with **GitHub Actions CI/CD** (`.github/workflows/build-apk.yml`).
+
+### How to download the automatically built APK from GitHub:
+1. **On Every Push/PR**: GitHub Actions automatically compiles both debug and release APKs.
+2. **Download Artifacts**:
+   - Navigate to your repository's **Actions** tab on GitHub.
+   - Click the latest **Build & Release Android APK** workflow run.
+   - Under **Artifacts** at the bottom of the page, click **`JARVIS-Debug-APK`** (or `JARVIS-All-APKs`) to download the APK.
+3. **Automated GitHub Releases**:
+   - Push any version tag (e.g., `git tag v1.0.0 && git push origin v1.0.0`).
+   - GitHub Actions will create a new release on the **Releases** page and attach the compiled APKs.
+
+---
+
+## 🚀 Building & Exporting the APK Locally
 
 ### 1. Clone the GitHub Repository
 ```bash
