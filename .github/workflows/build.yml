@@ -37,13 +37,14 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK Licenses
+      - name: Accept Android SDK Licenses & Install Components
         run: |
           yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" || true
 
-      - name: Configure Secrets & Environment (.env)
+      - name: Prepare Keystores & Environment (.env)
         run: |
-          # Configure .env file for Secrets Gradle Plugin
+          # 1. Prepare .env for Secrets Gradle Plugin
           if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
             echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
           elif [ -f .env.example ]; then
@@ -51,22 +52,25 @@ jobs:
           else
             echo "GEMINI_API_KEY=" > .env
           fi
-          echo "Configured .env file successfully."
+          
+          # Ensure .env.example also exists
+          if [ ! -f .env.example ]; then
+            echo "GEMINI_API_KEY=" > .env.example
+          fi
 
-      - name: Configure Release Keystore & Signing
-        id: signing_setup
-        run: |
+          # 2. Decode Debug Keystore if present as base64
+          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore || true
+          fi
+
+          # 3. Handle custom Release Keystore if configured in GitHub Secrets
           if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
-            echo "Decoding release keystore from secrets..."
+            echo "Decoding custom release keystore..."
             echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > "$GITHUB_WORKSPACE/release.jks"
             echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/release.jks" >> $GITHUB_ENV
             echo "STORE_PASSWORD=${{ secrets.RELEASE_STORE_PASSWORD || secrets.STORE_PASSWORD || 'android' }}" >> $GITHUB_ENV
             echo "KEY_ALIAS=${{ secrets.RELEASE_KEY_ALIAS || secrets.KEY_ALIAS || 'upload' }}" >> $GITHUB_ENV
             echo "KEY_PASSWORD=${{ secrets.RELEASE_KEY_PASSWORD || secrets.KEY_PASSWORD || 'android' }}" >> $GITHUB_ENV
-            echo "has_release_signing=true" >> $GITHUB_OUTPUT
-          else
-            echo "No custom release keystore provided. Defaulting to debug signing fallback for release build."
-            echo "has_release_signing=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Setup Gradle
@@ -75,28 +79,25 @@ jobs:
           gradle-version: 8.13
           cache-read-only: false
 
-      - name: Initialize Gradle Wrapper & Build APKs
+      - name: Build Debug & Release APKs
         run: |
-          gradle wrapper --gradle-version 8.13 --distribution-type bin
-          chmod +x ./gradlew || true
-          ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
+          gradle :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
 
       - name: Organize APK Artifacts
         run: |
-          mkdir -p outputs/debug outputs/release
+          mkdir -p outputs/debug outputs/release outputs/all
           
-          # Find and copy Debug APK
-          find app/build/outputs/apk/debug -name "*.apk" -type f -exec cp -v {} outputs/debug/JARVIS-debug.apk \;
+          # Find and copy Debug APKs
+          find app/build/outputs/apk/debug -name "*.apk" -type f -exec cp -v {} outputs/debug/JARVIS-debug.apk \; 2>/dev/null || true
           
-          # Find and copy Release APK
-          find app/build/outputs/apk/release -name "*.apk" -type f -exec cp -v {} outputs/release/JARVIS-release.apk \;
+          # Find and copy Release APKs
+          find app/build/outputs/apk/release -name "*.apk" -type f -exec cp -v {} outputs/release/JARVIS-release.apk \; 2>/dev/null || true
           
-          # Flatten into main outputs folder for easy bundle access
-          mkdir -p outputs/all
-          find outputs/debug outputs/release -name "*.apk" -type f -exec cp -v {} outputs/all/ \;
+          # Copy all discovered APKs to outputs/all
+          find app/build/outputs/apk -name "*.apk" -type f -exec cp -v {} outputs/all/ \; 2>/dev/null || true
           
-          echo "=== Collected APKs ==="
-          ls -lh outputs/all/
+          echo "=== Built APK Files ==="
+          ls -la outputs/all/
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
@@ -104,6 +105,7 @@ jobs:
           name: JARVIS-Debug-APK
           path: outputs/debug/*.apk
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
@@ -111,6 +113,7 @@ jobs:
           name: JARVIS-Release-APK
           path: outputs/release/*.apk
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload All Built APKs
         uses: actions/upload-artifact@v4
@@ -118,6 +121,7 @@ jobs:
           name: JARVIS-All-APKs
           path: outputs/all/*.apk
           retention-days: 30
+          if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
