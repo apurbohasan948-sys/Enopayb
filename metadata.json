@@ -1,0 +1,7 @@
+{
+  "name": "JARVIS",
+  "description": "Privacy-first modular personal AI assistant with local-first architecture, tool planning, and defensive security",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
