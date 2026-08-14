@@ -125,10 +125,48 @@ fun ModelsScreen(
     var benchmarkResult by remember { mutableStateOf<String?>(null) }
 
     val availableGeminiModels = listOf(
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro"
+        GeminiModelInfo(
+            id = "gemini-3.5-flash",
+            displayName = "Gemini 3.5 Flash",
+            badge = "RECOMMENDED • FREE TIER",
+            description = "Fast, state-of-the-art general reasoning & chat (Google AI Studio Free Tier)"
+        ),
+        GeminiModelInfo(
+            id = "gemini-3.1-pro-preview",
+            displayName = "Gemini 3.1 Pro Preview",
+            badge = "DEEP REASONING",
+            description = "Advanced reasoning, complex coding, math & STEM logic"
+        ),
+        GeminiModelInfo(
+            id = "gemini-3.1-flash-lite-preview",
+            displayName = "Gemini 3.1 Flash-Lite",
+            badge = "ULTRA FAST • LIGHTWEIGHT",
+            description = "Ultra-low latency inference for quick real-time assistance"
+        ),
+        GeminiModelInfo(
+            id = "gemini-flash-latest",
+            displayName = "Gemini Flash (Latest)",
+            badge = "ALWAYS LATEST",
+            description = "Automatic alias resolving to latest stable Flash engine"
+        ),
+        GeminiModelInfo(
+            id = "gemini-2.5-flash-image",
+            displayName = "Gemini 2.5 Flash Image",
+            badge = "IMAGE & VISION",
+            description = "Multimodal image understanding and image editing capabilities"
+        ),
+        GeminiModelInfo(
+            id = "gemini-3.1-flash-image-preview",
+            displayName = "Gemini 3.1 Flash Image HD",
+            badge = "4K VISION",
+            description = "High-definition vision analysis & multi-resolution generation"
+        ),
+        GeminiModelInfo(
+            id = "gemini-2.5-flash-preview-tts",
+            displayName = "Gemini 2.5 Flash TTS",
+            badge = "VOICE / SPEECH",
+            description = "Native text-to-speech & expressive audio synthesis"
+        )
     )
 
     Column(
@@ -306,9 +344,9 @@ fun ModelsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Model Selection Chips
+            // Model Selection Chips & Cards
             Text(
-                text = "SELECT GEMINI MODEL",
+                text = "SELECT GEMINI MODEL (FREE & WORKING)",
                 color = JarvisTextSecondary,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
@@ -318,19 +356,28 @@ fun ModelsScreen(
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                availableGeminiModels.forEach { modelName ->
-                    val isSelected = selectedModel == modelName
+                availableGeminiModels.forEach { modelInfo ->
+                    val isSelected = selectedModel == modelInfo.id
                     FilterChip(
                         selected = isSelected,
-                        onClick = { selectedModel = modelName },
+                        onClick = { selectedModel = modelInfo.id },
                         label = {
-                            Text(
-                                text = modelName,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
+                            Column(modifier = Modifier.padding(vertical = 2.dp)) {
+                                Text(
+                                    text = modelInfo.displayName,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Text(
+                                    text = modelInfo.badge,
+                                    fontSize = 8.sp,
+                                    color = if (isSelected) JarvisCyan else JarvisAmber,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
                         },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = JarvisCyan.copy(alpha = 0.2f),
@@ -346,6 +393,50 @@ fun ModelsScreen(
                             borderWidth = 1.dp
                         )
                     )
+                }
+            }
+
+            // Selected Model Description
+            val currentSelectedInfo = availableGeminiModels.find { it.id == selectedModel }
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = JarvisDarkNavy.copy(alpha = 0.8f),
+                border = BorderStroke(0.6.dp, JarvisBorderGlow),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+            ) {
+                Column(modifier = Modifier.padding(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "ACTIVE MODEL ID: $selectedModel",
+                            color = JarvisCyan,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        if (currentSelectedInfo != null) {
+                            Text(
+                                text = currentSelectedInfo.badge,
+                                color = JarvisEmerald,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    if (currentSelectedInfo != null) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = currentSelectedInfo.description,
+                            color = JarvisTextSecondary,
+                            fontSize = 10.sp
+                        )
+                    }
                 }
             }
 
@@ -711,3 +802,11 @@ fun InfoMetricRow(label: String, value: String) {
         )
     }
 }
+
+data class GeminiModelInfo(
+    val id: String,
+    val displayName: String,
+    val badge: String,
+    val description: String
+)
+

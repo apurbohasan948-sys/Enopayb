@@ -215,7 +215,7 @@ class LocalModelProvider : ModelProvider {
  */
 class GeminiModelProvider : ModelProvider {
     var runtimeApiKey: String = ""
-    var selectedModel: String = "gemini-2.5-flash"
+    var selectedModel: String = "gemini-3.5-flash"
     var temperature: Float = 0.4f
     var customSystemPrompt: String = "You are JARVIS's Cloud Teacher Supervisor. Provide concise, accurate answers for an Android assistant. Format device commands clearly."
 
@@ -298,7 +298,7 @@ class GeminiModelProvider : ModelProvider {
     ): ModelResponse = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val apiKey = getEffectiveApiKey()
-        val model = selectedModel.ifEmpty { "gemini-2.5-flash" }
+        val model = selectedModel.ifEmpty { "gemini-3.5-flash" }
 
         if (apiKey.isBlank()) {
             // Graceful fallback simulation if user hasn't set custom key
