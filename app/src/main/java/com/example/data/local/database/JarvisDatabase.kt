@@ -24,9 +24,10 @@ import kotlinx.coroutines.launch
         SkillEntity::class,
         SecurityEventEntity::class,
         ChatMessageEntity::class,
-        KnowledgeChunkEntity::class
+        KnowledgeChunkEntity::class,
+        com.example.data.local.entity.VisualExperienceEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -43,6 +44,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                     JarvisDatabase::class.java,
                     "jarvis_brain.db"
                 )
+                    .fallbackToDestructiveMigration()
                     .addCallback(JarvisDatabaseCallback(scope))
                     .build()
                 INSTANCE = instance

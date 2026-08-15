@@ -19,6 +19,8 @@ import com.example.core.accessibility.JarvisAccessibilityService
 import com.example.core.contacts.ContactResolutionResult
 import com.example.core.contacts.ContactResolver
 import com.example.core.model.ToolIntent
+import com.example.core.vision.ScreenUnderstandingEngine
+import com.example.core.vision.SemanticTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URLEncoder
@@ -34,7 +36,10 @@ data class ToolExecutionResult(
     val verified: Boolean = true
 )
 
-class ToolRouter(private val context: Context) {
+class ToolRouter(
+    private val context: Context,
+    val screenEngine: ScreenUnderstandingEngine? = null
+) {
 
     private val cameraManager by lazy {
         context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
@@ -339,15 +344,36 @@ class ToolRouter(private val context: Context) {
         }
     }
 
-    private fun findTextOnScreen(query: String): ToolExecutionResult {
+    private suspend fun findTextOnScreen(query: String): ToolExecutionResult {
         if (!JarvisAccessibilityService.isAccessibilityEnabled(context)) {
             return ToolExecutionResult(
                 success = false,
                 tool = "screen_observer",
                 action = "find_element",
-                output = "Accessibility Service is required to locate text on screen.",
+                output = "Accessibility Service is required to locate elements on screen.",
                 errorMessage = "Service not enabled"
             )
+        }
+
+        if (screenEngine != null) {
+            val (element, node) = screenEngine.findElementByIntent(query)
+            if (element != null) {
+                return ToolExecutionResult(
+                    success = true,
+                    tool = "screen_understanding_engine",
+                    action = "find_element",
+                    output = "Found '$query' (${element.semanticRole}) via ${element.source} at bounds: [${element.bounds.left}, ${element.bounds.top}, ${element.bounds.right}, ${element.bounds.bottom}] (Confidence: ${(element.confidence * 100).toInt()}%)",
+                    evidence = "Matched '${element.text ?: element.contentDescription ?: element.visualDescription}'",
+                    details = mapOf(
+                        "role" to element.semanticRole,
+                        "source" to element.source,
+                        "bounds" to element.bounds.toString(),
+                        "confidence" to element.confidence.toString(),
+                        "description" to (element.visualDescription ?: "")
+                    ),
+                    verified = true
+                )
+            }
         }
 
         val (node, observed) = JarvisAccessibilityService.findElement(query)
@@ -378,7 +404,7 @@ class ToolRouter(private val context: Context) {
         }
     }
 
-    private fun tapElement(target: String): ToolExecutionResult {
+    private suspend fun tapElement(target: String): ToolExecutionResult {
         if (!JarvisAccessibilityService.isAccessibilityEnabled(context)) {
             return ToolExecutionResult(
                 success = false,
@@ -387,6 +413,22 @@ class ToolRouter(private val context: Context) {
                 output = "Accessibility Service is required to perform tap actions.",
                 errorMessage = "Service disabled"
             )
+        }
+
+        // Try ScreenUnderstandingEngine first for intent and multimodal awareness (e.g. 🔍 icon without text)
+        if (screenEngine != null) {
+            val details = screenEngine.tapElementByIntent(target)
+            if (details.success) {
+                return ToolExecutionResult(
+                    success = true,
+                    tool = "screen_understanding_engine",
+                    action = "tap",
+                    output = "Tapped '$target' via ${details.methodUsed}.",
+                    evidence = details.evidence,
+                    details = mapOf("target" to target, "method" to details.methodUsed),
+                    verified = true
+                )
+            }
         }
 
         val details = JarvisAccessibilityService.clickElement(target)

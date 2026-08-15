@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -69,6 +70,7 @@ import com.example.ui.screens.ModelsScreen
 import com.example.ui.screens.RagKnowledgeScreen
 import com.example.ui.screens.SecurityScreen
 import com.example.ui.screens.SkillsScreen
+import com.example.ui.screens.VisionDebugScreen
 import com.example.ui.theme.JarvisAmber
 import com.example.ui.theme.JarvisBorder
 import com.example.ui.theme.JarvisBorderGlow
@@ -85,6 +87,7 @@ import com.example.ui.theme.MyApplicationTheme
 
 enum class JarvisTab(val title: String, val icon: ImageVector) {
     CONSOLE("HUD", Icons.Default.Terminal),
+    VISION("VISION", Icons.Default.Visibility),
     MODELS("MODELS", Icons.Default.Memory),
     MEMORY("MEMORY", Icons.Default.Bookmark),
     SKILLS("SKILLS", Icons.Default.Build),
@@ -303,6 +306,7 @@ fun JarvisApp(viewModel: JarvisViewModel) {
         ) {
             when (currentTab) {
                 JarvisTab.CONSOLE -> HudConsoleScreen(viewModel = viewModel)
+                JarvisTab.VISION -> VisionDebugScreen(viewModel = viewModel)
                 JarvisTab.MODELS -> ModelsScreen(viewModel = viewModel)
                 JarvisTab.MEMORY -> MemoryScreen(viewModel = viewModel)
                 JarvisTab.SKILLS -> SkillsScreen(viewModel = viewModel)

@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.accessibility.AccessibilityDiagnostics
@@ -18,6 +19,13 @@ import com.example.core.rag.RagEngine
 import com.example.core.security.SecurityPolicyEngine
 import com.example.core.tools.ToolExecutionResult
 import com.example.core.tools.ToolRouter
+import com.example.core.vision.GeminiVisionProvider
+import com.example.core.vision.HybridVisionProvider
+import com.example.core.vision.LocalVisionProvider
+import com.example.core.vision.ScreenUnderstandingEngine
+import com.example.core.vision.SemanticTarget
+import com.example.core.vision.UnifiedScreen
+import com.example.core.vision.VisualElement
 import com.example.core.voice.VoiceManager
 import com.example.core.voice.VoiceState
 import com.example.data.local.database.JarvisDatabase
@@ -27,6 +35,7 @@ import com.example.data.local.entity.MemoryCategory
 import com.example.data.local.entity.MemoryEntity
 import com.example.data.local.entity.SecurityEventEntity
 import com.example.data.local.entity.SkillEntity
+import com.example.data.local.entity.VisualExperienceEntity
 import com.example.data.local.preference.JarvisPreferences
 import com.example.data.repository.JarvisRepository
 import kotlinx.coroutines.Dispatchers
@@ -63,8 +72,14 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val repository = JarvisRepository(database.jarvisDao())
 
     val voiceManager = VoiceManager(application)
-    private val toolRouter = ToolRouter(application)
-    val agentController = AgentController(application, toolRouter)
+
+    val localVisionProvider = LocalVisionProvider()
+    val geminiVisionProvider = GeminiVisionProvider()
+    val hybridVisionProvider = HybridVisionProvider(localVisionProvider, geminiVisionProvider, repository)
+    val screenEngine = ScreenUnderstandingEngine(application, hybridVisionProvider, repository)
+
+    private val toolRouter = ToolRouter(application, screenEngine)
+    val agentController = AgentController(application, toolRouter, screenEngine)
 
     private val localProvider = LocalModelProvider()
     private val geminiProvider = GeminiModelProvider()
@@ -85,6 +100,17 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     val allKnowledgeChunks: StateFlow<List<KnowledgeChunkEntity>> = repository.allKnowledgeChunks
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val visualExperiences: StateFlow<List<VisualExperienceEntity>> = repository.allVisualExperiences
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Vision Streams
+    val latestUnifiedScreen: StateFlow<UnifiedScreen?> = screenEngine.latestUnifiedScreen
+    val latestScreenshotBitmap: StateFlow<Bitmap?> = screenEngine.latestScreenshotBitmap
+    val lastDetectedElements: StateFlow<List<VisualElement>> = screenEngine.lastDetectedElements
+
+    private val _isCloudVisionEnabled = MutableStateFlow(true)
+    val isCloudVisionEnabled: StateFlow<Boolean> = _isCloudVisionEnabled.asStateFlow()
 
     // UI States
     private val _activeModelType = MutableStateFlow(ActiveModelType.HYBRID_SUPERVISED)
@@ -151,6 +177,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         geminiProvider.selectedModel = _selectedGeminiModel.value
         geminiProvider.temperature = _geminiTemperature.value
         geminiProvider.customSystemPrompt = _customSystemPrompt.value
+
+        geminiVisionProvider.runtimeApiKey = _geminiApiKey.value
+        geminiVisionProvider.selectedModel = if (_selectedGeminiModel.value.contains("gemini")) _selectedGeminiModel.value else "gemini-2.5-flash"
+        hybridVisionProvider.isCloudVisionEnabled = _isCloudVisionEnabled.value
     }
 
     fun saveGeminiConfig(apiKey: String, model: String, temperature: Float, systemPrompt: String) {
@@ -607,6 +637,70 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val count = repository.importBrainJson(jsonStr)
             onImported(count)
+        }
+    }
+
+    // === Multimodal Screen Understanding & Visual Diagnostics ===
+
+    fun toggleCloudVision(enabled: Boolean) {
+        _isCloudVisionEnabled.value = enabled
+        hybridVisionProvider.isCloudVisionEnabled = enabled
+    }
+
+    fun triggerVisualScreenAnalysis(semanticGoal: String? = null) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            val screen = screenEngine.observeScreen(semanticGoal = semanticGoal, forceVisualScan = true)
+            _isProcessing.value = false
+            refreshAccessibilityDiagnostics()
+
+            val text = "[MULTIMODAL SCAN]\nApp: ${screen.packageName}\nNodes: ${screen.totalNodes} | Visual Elements: ${screen.visualElements.size}\nSummary: ${screen.getSummary()}"
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "VISION",
+                    message = text,
+                    providerType = "HYBRID_VISION"
+                )
+            )
+            voiceManager.speak("Screen visual scan complete. Detected ${screen.visualElements.size} visual elements.")
+        }
+    }
+
+    fun testIntentDetection(targetRole: String = "SEARCH") {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            val (element, node) = screenEngine.findElementByIntent(targetRole)
+            _isProcessing.value = false
+
+            val msg = if (element != null) {
+                "[INTENT DETECTED: $targetRole]\nSource: ${element.source}\nBounds: [${element.bounds.left}, ${element.bounds.top}, ${element.bounds.right}, ${element.bounds.bottom}]\nConfidence: ${(element.confidence * 100).toInt()}%\nDesc: ${element.visualDescription ?: element.text ?: element.contentDescription}"
+            } else {
+                "[INTENT FAILED: $targetRole]\nNo matching element found via Accessibility, Heuristics, or Gemini Vision."
+            }
+
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "VISION",
+                    message = msg,
+                    providerType = "SCREEN_UNDERSTANDING"
+                )
+            )
+            voiceManager.speak(if (element != null) "Found target $targetRole with ${(element.confidence * 100).toInt()}% confidence" else "Target $targetRole not found.")
+        }
+    }
+
+    fun testPlayTomAndJerry() {
+        viewModelScope.launch {
+            val plan = AgentController.planTaskForQuery("Play Tom and Jerry") ?: return@launch
+            agentController.executeTaskPlan(plan) { status ->
+                // on step update
+            }
+        }
+    }
+
+    fun clearVisualExperiences() {
+        viewModelScope.launch {
+            repository.clearVisualExperiences()
         }
     }
 }

@@ -1,12 +1,13 @@
 package com.example.core.agent
 
 import android.content.Context
-import com.example.core.accessibility.ActionExecutionDetails
 import com.example.core.accessibility.JarvisAccessibilityService
-import com.example.core.accessibility.ObservedScreen
 import com.example.core.model.ToolIntent
 import com.example.core.tools.ToolExecutionResult
 import com.example.core.tools.ToolRouter
+import com.example.core.vision.ScreenUnderstandingEngine
+import com.example.core.vision.SemanticTarget
+import com.example.core.vision.UnifiedScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,7 +63,8 @@ data class TaskExecutionSummary(
 
 class AgentController(
     private val context: Context,
-    private val toolRouter: ToolRouter
+    private val toolRouter: ToolRouter,
+    val screenEngine: ScreenUnderstandingEngine? = null
 ) {
     private val _agentState = MutableStateFlow(AgentState.IDLE)
     val agentState: StateFlow<AgentState> = _agentState.asStateFlow()
@@ -88,7 +90,7 @@ class AgentController(
     }
 
     /**
-     * Executes a planned multi-step sequence with screen observation and verification before & after each step.
+     * Executes a planned multi-step sequence with multimodal screen observation and verification before & after each step.
      */
     suspend fun executeTaskPlan(
         plan: TaskPlan,
@@ -123,22 +125,23 @@ class AgentController(
             _liveStatusMessage.value = status
             onStepUpdate(status)
 
-            // 1. Observe Screen Before Action
-            val beforeScreen = JarvisAccessibilityService.observeScreen()
-            val beforeSummary = beforeScreen?.getSummary() ?: "No accessibility screen available"
+            // 1. Observe Screen Before Action (Multimodal Screen Observation)
+            val semanticGoal = extractGoalFromStep(step)
+            val beforeScreen = screenEngine?.observeScreen(semanticGoal = semanticGoal)
+            val beforeSummary = beforeScreen?.getSummary() ?: JarvisAccessibilityService.observeScreen()?.getSummary() ?: "Screen observing..."
 
             // 2. Act
             _agentState.value = AgentState.ACTING
             val result = toolRouter.executeTool(step.toolIntent)
 
-            // 3. Wait for UI transition
+            // 3. Wait for UI animation & transition
             _agentState.value = AgentState.WAITING
-            delay(1000)
+            delay(850)
 
             // 4. Observe Screen After Action
             _agentState.value = AgentState.OBSERVING
-            val afterScreen = JarvisAccessibilityService.observeScreen()
-            val afterSummary = afterScreen?.getSummary() ?: "Screen captured"
+            val afterScreen = screenEngine?.observeScreen(semanticGoal = semanticGoal)
+            val afterSummary = afterScreen?.getSummary() ?: JarvisAccessibilityService.observeScreen()?.getSummary() ?: "Action observed"
 
             // 5. Verify
             _agentState.value = AgentState.VERIFYING
@@ -154,8 +157,8 @@ class AgentController(
             stepRecords.add(record)
 
             if (!result.success && !verified) {
-                // If a step fails, attempt one intelligent retry or recovery
-                val recoveryResult = attemptStepRecovery(step)
+                // If a step fails, attempt one intelligent multimodal recovery
+                val recoveryResult = attemptStepRecovery(step, semanticGoal)
                 if (!recoveryResult) {
                     allSuccess = false
                     finalMessage = "Step failed at: ${step.description} (${result.errorMessage ?: result.output})"
@@ -183,29 +186,40 @@ class AgentController(
         )
     }
 
+    private fun extractGoalFromStep(step: PlanStep): String {
+        val tool = step.toolIntent.toolName.lowercase()
+        val target = step.toolIntent.arguments["target_text"] ?: step.toolIntent.arguments["query"] ?: step.toolIntent.arguments["target"] ?: ""
+        return when {
+            tool == "open_app" -> step.toolIntent.arguments["app_name"] ?: "App"
+            target.isNotBlank() -> target
+            tool.contains("search") -> "SEARCH"
+            tool.contains("play") -> "PLAY"
+            else -> step.description
+        }
+    }
+
     private fun verifyStepOutcome(
         step: PlanStep,
-        before: ObservedScreen?,
-        after: ObservedScreen?,
+        before: UnifiedScreen?,
+        after: UnifiedScreen?,
         result: ToolExecutionResult
     ): Boolean {
-        if (!result.success) return false
+        if (!result.success && !result.verified) return false
         if (before == null || after == null) return result.success
 
-        return when (step.toolIntent.toolName) {
+        return when (step.toolIntent.toolName.lowercase()) {
             "open_app" -> {
                 val appName = step.toolIntent.arguments["app_name"].orEmpty().lowercase()
                 after.packageName.lowercase().contains(appName) ||
-                        after.elements.any { it.text.contains(appName, ignoreCase = true) } ||
+                        after.elements.any { it.text?.contains(appName, ignoreCase = true) == true } ||
                         after.packageName != before.packageName
             }
-            "tap", "find_and_tap" -> {
-                // Verified if the screen content transitioned or element hierarchy shifted
-                after.timestamp != before.timestamp
+            "tap", "find_and_tap", "click", "click_element" -> {
+                after.timestamp != before.timestamp || result.success
             }
-            "type_text" -> {
+            "type_text", "type" -> {
                 val typed = step.toolIntent.arguments["text"].orEmpty()
-                after.elements.any { it.text.contains(typed, ignoreCase = true) } || result.success
+                after.elements.any { it.text?.contains(typed, ignoreCase = true) == true } || result.success
             }
             "press_back", "press_home" -> {
                 after.packageName != before.packageName || after.totalNodes != before.totalNodes
@@ -217,16 +231,20 @@ class AgentController(
         }
     }
 
-    private suspend fun attemptStepRecovery(step: PlanStep): Boolean {
-        delay(600)
-        // Retry action once with gesture fallback or refreshed screen
+    private suspend fun attemptStepRecovery(step: PlanStep, semanticGoal: String): Boolean {
+        delay(500)
+        // If it was a tap action, attempt multimodal intent tap via ScreenUnderstandingEngine
+        if (screenEngine != null && (step.toolIntent.toolName == "tap" || step.toolIntent.toolName == "click")) {
+            val tapDetails = screenEngine.tapElementByIntent(semanticGoal)
+            if (tapDetails.success) return true
+        }
         val retryResult = toolRouter.executeTool(step.toolIntent)
         return retryResult.success
     }
 
     companion object {
         /**
-         * Decomposes complex user goals into an ordered task plan.
+         * Decomposes complex user goals into an ordered multimodal task plan.
          */
         fun planTaskForQuery(query: String): TaskPlan? {
             val lower = query.lowercase().trim()
@@ -245,8 +263,8 @@ class AgentController(
                         ),
                         PlanStep(
                             stepNumber = 2,
-                            description = "Locate and click Search button",
-                            toolIntent = ToolIntent("tap", mapOf("target_text" to "Search"), "LOW", "Tap Search icon"),
+                            description = "Locate and click Search 🔍 button",
+                            toolIntent = ToolIntent("tap", mapOf("target_text" to "SEARCH"), "LOW", "Tap Search icon"),
                             expectedOutcome = "Search bar opened"
                         ),
                         PlanStep(
@@ -257,14 +275,14 @@ class AgentController(
                         ),
                         PlanStep(
                             stepNumber = 4,
-                            description = "Tap search or first result suggestion",
+                            description = "Tap search suggestion or submit",
                             toolIntent = ToolIntent("tap", mapOf("target_text" to searchQuery), "LOW", "Execute search"),
                             expectedOutcome = "Search results displayed"
                         ),
                         PlanStep(
                             stepNumber = 5,
                             description = "Play first relevant video result",
-                            toolIntent = ToolIntent("tap", mapOf("target_text" to searchQuery), "LOW", "Start video playback"),
+                            toolIntent = ToolIntent("tap", mapOf("target_text" to "VIDEO_ITEM"), "LOW", "Start video playback"),
                             expectedOutcome = "Video player active"
                         )
                     )
@@ -278,9 +296,9 @@ class AgentController(
                     goal = "Play $target",
                     steps = listOf(
                         PlanStep(1, "Open YouTube", ToolIntent("open_app", mapOf("app_name" to "YouTube"), "LOW"), "YouTube open"),
-                        PlanStep(2, "Click Search", ToolIntent("tap", mapOf("target_text" to "Search"), "LOW"), "Search bar open"),
+                        PlanStep(2, "Click Search 🔍", ToolIntent("tap", mapOf("target_text" to "SEARCH"), "LOW"), "Search bar open"),
                         PlanStep(3, "Type $target", ToolIntent("type_text", mapOf("text" to target), "LOW"), "Text entered"),
-                        PlanStep(4, "Select video", ToolIntent("tap", mapOf("target_text" to target), "LOW"), "Playback started")
+                        PlanStep(4, "Select video result", ToolIntent("tap", mapOf("target_text" to "VIDEO_ITEM"), "LOW"), "Playback started")
                     )
                 )
             }

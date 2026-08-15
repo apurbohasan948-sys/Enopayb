@@ -7,7 +7,9 @@ import com.example.data.local.entity.MemoryCategory
 import com.example.data.local.entity.MemoryEntity
 import com.example.data.local.entity.SecurityEventEntity
 import com.example.data.local.entity.SkillEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -42,6 +44,20 @@ class JarvisRepository(private val dao: JarvisDao) {
 
     // === KNOWLEDGE CHUNKS ===
     val allKnowledgeChunks: Flow<List<KnowledgeChunkEntity>> = dao.getAllKnowledgeChunks()
+
+    val allVisualExperiences: Flow<List<com.example.data.local.entity.VisualExperienceEntity>> = dao.getAllVisualExperiences()
+
+    suspend fun getVisualExperiencesForRole(pkg: String, role: String): List<com.example.data.local.entity.VisualExperienceEntity> = withContext(Dispatchers.IO) {
+        dao.getExperiencesForRole(pkg, role)
+    }
+
+    suspend fun insertVisualExperience(experience: com.example.data.local.entity.VisualExperienceEntity): Long = withContext(Dispatchers.IO) {
+        dao.insertVisualExperience(experience)
+    }
+
+    suspend fun clearVisualExperiences() = withContext(Dispatchers.IO) {
+        dao.clearVisualExperiences()
+    }
     suspend fun searchKnowledge(query: String): List<KnowledgeChunkEntity> = dao.searchKnowledgeChunks(query)
     suspend fun insertKnowledgeChunk(chunk: KnowledgeChunkEntity): Long = dao.insertKnowledgeChunk(chunk)
     suspend fun deleteKnowledgeChunk(chunk: KnowledgeChunkEntity) = dao.deleteKnowledgeChunk(chunk)

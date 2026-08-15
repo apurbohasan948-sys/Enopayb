@@ -5,19 +5,27 @@ import android.accessibilityservice.GestureDescription
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.coroutines.resume
 
 data class ObservedNode(
     val text: String,
@@ -136,7 +144,7 @@ class JarvisAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "JarvisAccessibility"
-        private var instance: JarvisAccessibilityService? = null
+        var instance: JarvisAccessibilityService? = null
 
         private val _isServiceActive = MutableStateFlow(false)
         val isServiceActive: StateFlow<Boolean> = _isServiceActive.asStateFlow()
@@ -666,6 +674,56 @@ class JarvisAccessibilityService : AccessibilityService() {
             val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
             return service.dispatchGesture(gesture, null, null)
+        }
+
+        suspend fun takeScreenshotBitmap(): Bitmap? {
+            val service = instance ?: return createPlaceholderScreenshotBitmap()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                return suspendCancellableCoroutine { cont ->
+                    try {
+                        val executor = ContextCompat.getMainExecutor(service)
+                        service.takeScreenshot(
+                            Display.DEFAULT_DISPLAY,
+                            executor,
+                            object : TakeScreenshotCallback {
+                                override fun onSuccess(screenshot: ScreenshotResult) {
+                                    try {
+                                        val hwBuffer = screenshot.hardwareBuffer
+                                        val colorSpace = screenshot.colorSpace
+                                        val bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, true)
+                                        hwBuffer.close()
+                                        if (cont.isActive) {
+                                            cont.resume(bitmap ?: createPlaceholderScreenshotBitmap())
+                                        }
+                                    } catch (e: Exception) {
+                                        if (cont.isActive) cont.resume(createPlaceholderScreenshotBitmap())
+                                    }
+                                }
+
+                                override fun onFailure(errorCode: Int) {
+                                    Log.w(TAG, "takeScreenshot failed with code $errorCode")
+                                    if (cont.isActive) cont.resume(createPlaceholderScreenshotBitmap())
+                                }
+                            }
+                        )
+                    } catch (e: Exception) {
+                        if (cont.isActive) cont.resume(createPlaceholderScreenshotBitmap())
+                    }
+                }
+            }
+            return createPlaceholderScreenshotBitmap()
+        }
+
+        fun createPlaceholderScreenshotBitmap(): Bitmap {
+            val width = 1080
+            val height = 2400
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            val paint = Paint().apply {
+                color = android.graphics.Color.rgb(18, 22, 34)
+            }
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+            return bitmap
         }
     }
 }

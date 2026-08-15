@@ -99,4 +99,17 @@ interface JarvisDao {
 
     @Query("DELETE FROM knowledge_chunks")
     suspend fun clearKnowledgeChunks()
+
+    // === VISUAL EXPERIENCES ===
+    @Query("SELECT * FROM visual_experiences ORDER BY timestamp DESC")
+    fun getAllVisualExperiences(): Flow<List<com.example.data.local.entity.VisualExperienceEntity>>
+
+    @Query("SELECT * FROM visual_experiences WHERE appPackage = :pkg AND semanticRole = :role ORDER BY confidence DESC, timestamp DESC LIMIT 5")
+    suspend fun getExperiencesForRole(pkg: String, role: String): List<com.example.data.local.entity.VisualExperienceEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertVisualExperience(exp: com.example.data.local.entity.VisualExperienceEntity): Long
+
+    @Query("DELETE FROM visual_experiences")
+    suspend fun clearVisualExperiences()
 }
