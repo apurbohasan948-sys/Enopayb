@@ -7,6 +7,8 @@ import android.util.Base64
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.core.accessibility.ActionExecutionDetails
 import com.example.core.accessibility.JarvisAccessibilityService
+import com.example.core.vision.ocr.LocalOCRProvider
+import com.example.core.vision.ocr.OCRProvider
 import com.example.data.local.entity.VisualExperienceEntity
 import com.example.data.repository.JarvisRepository
 import kotlinx.coroutines.Dispatchers
@@ -14,21 +16,51 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
 /**
  * ScreenUnderstandingEngine.
  * Unified brain responsible for multimodal screen perception:
  * 1. Semantic Android UI Accessibility Tree
- * 2. Visual icon and layout understanding
- * 3. Fast-path intent matching (e.g. 🔍 Search even when icon has zero text)
- * 4. Experience database learning & storage
+ * 2. OCR Visual Text Detection
+ * 3. Icon recognition & Semantic Target Resolution (Phase 10)
+ * 4. Universal Visual UI & Semantic Screen Modeling
+ * 5. Experience database learning & storage
  */
 class ScreenUnderstandingEngine(
     private val context: Context,
     val hybridVisionProvider: HybridVisionProvider,
-    private val repository: JarvisRepository? = null
+    private val repository: JarvisRepository? = null,
+    val screenCaptureManager: ScreenCaptureManager = ScreenCaptureManager(context),
+    val ocrProvider: OCRProvider = LocalOCRProvider(),
+    val targetResolver: SemanticTargetResolver = SemanticTargetResolver(),
+    val iconRecognizer: IconSemanticRecognizer = IconSemanticRecognizer(),
+    val screenStateCache: ScreenStateCache = ScreenStateCache(),
+    val targetMatcher: VisualTargetMatcher = VisualTargetMatcher()
 ) {
+    val universalEngine by lazy {
+        UniversalScreenUnderstandingEngine(
+            context = context,
+            hybridVisionProvider = hybridVisionProvider,
+            repository = repository,
+            screenCaptureManager = screenCaptureManager,
+            ocrProvider = ocrProvider,
+            iconRecognizer = iconRecognizer,
+            screenStateCache = screenStateCache,
+            targetMatcher = targetMatcher
+        )
+    }
+
+    val actionExecutor by lazy {
+        SemanticActionExecutor(
+            context = context,
+            screenEngine = universalEngine,
+            repository = repository
+        )
+    }
+
     private val _latestUnifiedScreen = MutableStateFlow<UnifiedScreen?>(null)
     val latestUnifiedScreen: StateFlow<UnifiedScreen?> = _latestUnifiedScreen.asStateFlow()
 
@@ -42,9 +74,9 @@ class ScreenUnderstandingEngine(
      * Unified Screen Observation.
      * Collects:
      * A. AccessibilityNodeInfo tree
-     * B. Screenshot when visual analysis is required
-     * C. Local layout heuristics & visual understanding
-     * D. Cloud Vision fallback when necessary
+     * B. Screen snapshot when required/insufficient
+     * C. Local OCR text extraction
+     * D. Visual icon and semantic layout understanding
      */
     suspend fun observeScreen(
         semanticGoal: String? = null,
@@ -58,7 +90,17 @@ class ScreenUnderstandingEngine(
         val currentPackage = observedScreen?.packageName ?: diag.currentPackage
 
         observedScreen?.elements?.forEach { node ->
-            val role = inferSemanticRoleFromNode(node, currentPackage)
+            val iconResult = iconRecognizer.recognizeIcon(
+                text = node.text,
+                contentDescription = node.contentDescription,
+                viewId = node.viewId,
+                bounds = node.bounds,
+                appPackage = currentPackage,
+                screenContext = "",
+                taskGoal = semanticGoal
+            )
+
+            val role = iconResult?.contextualRole ?: inferSemanticRoleFromNode(node, currentPackage)
             accessibilityElements.add(
                 ScreenElement(
                     semanticRole = role,
@@ -70,26 +112,27 @@ class ScreenUnderstandingEngine(
                     isEditable = node.isEditable,
                     isScrollable = node.isScrollable,
                     bounds = node.bounds,
-                    confidence = 1.0f,
-                    source = "ACCESSIBILITY"
+                    confidence = iconResult?.confidence ?: 1.0f,
+                    source = if (iconResult != null) "ICON_RECOGNIZER" else "ACCESSIBILITY",
+                    visualDescription = iconResult?.meaning
                 )
             )
         }
 
-        // Determine if visual scan is required:
-        // A. Explicitly requested OR
-        // B. Target semantic role (e.g. SEARCH / PLAY / SEND) is not found in the accessibility tree with text
+        // Determine if visual/screenshot scan is needed
         val targetRole = semanticGoal?.let { SemanticTarget.normalizeIntent(it) }
         val hasSemanticMatch = targetRole != null && accessibilityElements.any {
-            it.semanticRole == targetRole && (it.text != null || it.contentDescription != null)
+            it.semanticRole == targetRole && (it.text != null || it.contentDescription != null || it.isClickable)
         }
-        val shouldScanVisuals = forceVisualScan || !hasSemanticMatch
+        val shouldScanVisuals = forceVisualScan ||
+                !hasSemanticMatch ||
+                screenCaptureManager.shouldCaptureScreenshot(diag.totalNodes, diag.clickableNodes, currentPackage, semanticGoal)
 
-        var visualElements = emptyList<VisualElement>()
+        val visualElements = mutableListOf<VisualElement>()
         var screenshotBase64: String? = null
 
         if (shouldScanVisuals) {
-            val bitmap = JarvisAccessibilityService.takeScreenshotBitmap()
+            val bitmap = screenCaptureManager.captureScreen(force = forceVisualScan)
             _latestScreenshotBitmap.value = bitmap
 
             if (bitmap != null) {
@@ -101,6 +144,21 @@ class ScreenUnderstandingEngine(
                     e.printStackTrace()
                 }
 
+                // 2. OCR Layer
+                val ocrResult = ocrProvider.extractText(bitmap)
+                ocrResult.elements.forEach { ocrElem ->
+                    visualElements.add(
+                        VisualElement(
+                            semanticRole = SemanticTarget.normalizeIntent(ocrElem.text),
+                            visualDescription = "OCR: ${ocrElem.text}",
+                            bounds = ocrElem.boundingBox,
+                            confidence = ocrElem.confidence,
+                            source = "OCR"
+                        )
+                    )
+                }
+
+                // 3. Multimodal / Heuristic Vision Analysis
                 val visionResult = hybridVisionProvider.analyzeScreenshot(
                     bitmap = bitmap,
                     prompt = "Detect UI controls for goal: ${semanticGoal ?: "general"}",
@@ -110,17 +168,16 @@ class ScreenUnderstandingEngine(
                     screenHeight = bitmap.height
                 )
 
-                visualElements = visionResult.elements
+                visualElements.addAll(visionResult.elements)
                 _lastDetectedElements.value = visualElements
             }
         }
 
-        // Merge visual elements into unified elements
+        // Merge visual & OCR elements into unified elements
         val combinedElements = mutableListOf<ScreenElement>()
         combinedElements.addAll(accessibilityElements)
 
         visualElements.forEach { vis ->
-            // Check if there is already an overlapping accessibility element
             val existing = combinedElements.firstOrNull { elem ->
                 elem.bounds.contains(vis.bounds.centerX(), vis.bounds.centerY()) ||
                         vis.bounds.contains(elem.bounds.centerX(), elem.bounds.centerY())
@@ -132,13 +189,13 @@ class ScreenUnderstandingEngine(
                     semanticRole = if (existing.semanticRole == SemanticTarget.UNKNOWN) vis.semanticRole else existing.semanticRole,
                     visualDescription = vis.visualDescription,
                     confidence = maxOf(existing.confidence, vis.confidence),
-                    source = "HYBRID"
+                    source = if (vis.source == "OCR") "HYBRID_OCR" else "HYBRID_VISION"
                 )
             } else {
                 combinedElements.add(
                     ScreenElement(
                         semanticRole = vis.semanticRole,
-                        text = null,
+                        text = if (vis.source == "OCR") vis.visualDescription.removePrefix("OCR: ") else null,
                         contentDescription = null,
                         viewId = null,
                         className = "android.view.View",
@@ -168,23 +225,27 @@ class ScreenUnderstandingEngine(
     }
 
     /**
-     * Find element by Intent (e.g. findElementByIntent("SEARCH") finds 🔍 even with zero text).
-     * Priority:
-     * 1. Accessibility exact text / content description
-     * 2. Accessibility resource ID
-     * 3. Visual icon detection (Local Heuristic / Gemini Vision)
-     * 4. Past Experience DB
+     * Resolves target UI control for a user goal.
+     */
+    fun resolveTargetForGoal(
+        goal: String,
+        screen: UnifiedScreen,
+        previousAction: String? = null
+    ): ResolvedTarget {
+        return targetResolver.resolveTarget(goal, screen, previousAction)
+    }
+
+    /**
+     * Find element by Intent.
      */
     suspend fun findElementByIntent(
         rawIntentOrQuery: String,
         currentScreen: UnifiedScreen? = null
     ): Pair<ScreenElement?, AccessibilityNodeInfo?> = withContext(Dispatchers.Default) {
         val targetRole = SemanticTarget.normalizeIntent(rawIntentOrQuery)
-        val trimmed = rawIntentOrQuery.trim().lowercase()
-
         val screen = currentScreen ?: observeScreen(semanticGoal = targetRole)
 
-        // Priority 1: Check Accessibility tree for high confidence match
+        // 1. Accessibility Tree Match
         val (node, observedNode) = JarvisAccessibilityService.findElement(rawIntentOrQuery)
         if (node != null && observedNode != null) {
             val element = ScreenElement(
@@ -203,46 +264,24 @@ class ScreenUnderstandingEngine(
             return@withContext Pair(element, node)
         }
 
-        // Priority 2: Check unified screen elements by Semantic Role
-        val matchingElement = screen.elements.firstOrNull {
-            it.semanticRole.equals(targetRole, ignoreCase = true) ||
-                    (it.visualDescription?.contains(trimmed, ignoreCase = true) == true)
-        }
-
-        if (matchingElement != null) {
-            // Find corresponding node if exists at coordinates
+        // 2. Semantic Target Resolver
+        val resolved = targetResolver.resolveTarget(rawIntentOrQuery, screen)
+        if (resolved.isConfident && resolved.element != null) {
             val root = JarvisAccessibilityService.instance?.rootInActiveWindow
-            val matchedNode = findNodeAtCoordinates(root, matchingElement.bounds.centerX(), matchingElement.bounds.centerY())
-            return@withContext Pair(matchingElement, matchedNode)
+            val matchedNode = findNodeAtCoordinates(root, resolved.element.bounds.centerX(), resolved.element.bounds.centerY())
+            return@withContext Pair(resolved.element, matchedNode)
         }
 
-        // Priority 3: Check visual elements directly
-        val visualMatch = screen.visualElements.firstOrNull {
-            it.semanticRole.equals(targetRole, ignoreCase = true) ||
-                    it.visualDescription.contains(trimmed, ignoreCase = true)
-        }
-
-        if (visualMatch != null) {
-            val elem = ScreenElement(
-                semanticRole = visualMatch.semanticRole,
-                bounds = visualMatch.bounds,
-                confidence = visualMatch.confidence,
-                source = visualMatch.source,
-                visualDescription = visualMatch.visualDescription,
-                isClickable = true
-            )
-            return@withContext Pair(elem, null)
-        }
-
-        Pair(null, null)
+        Pair(resolved.element, null)
     }
 
     /**
      * Executes tap by intent with comprehensive fallback:
-     * 1. Accessibility ACTION_CLICK
-     * 2. Parent ACTION_CLICK
-     * 3. Accessibility Gesture Coordinate Tap based on visual bounds
-     * 4. Verification and learning database recording
+     * 1. SemanticActionExecutor (dynamic resolution, verification, dialog protection)
+     * 2. Accessibility ACTION_CLICK
+     * 3. Parent ACTION_CLICK
+     * 4. Accessibility Gesture Coordinate Tap based on visual bounds
+     * 5. Verification and learning database recording
      */
     suspend fun tapElementByIntent(
         rawIntentOrQuery: String,
@@ -250,7 +289,22 @@ class ScreenUnderstandingEngine(
     ): ActionExecutionDetails = withContext(Dispatchers.Main) {
         val targetRole = SemanticTarget.normalizeIntent(rawIntentOrQuery)
 
-        // Observe screen with semantic intent
+        // Execute via Phase 10 SemanticActionExecutor
+        val actionRes = actionExecutor.executeAction(
+            targetGoalOrRole = rawIntentOrQuery,
+            actionType = "CLICK",
+            expectedOutcome = rawIntentOrQuery
+        )
+
+        if (actionRes.success) {
+            return@withContext ActionExecutionDetails(
+                success = true,
+                methodUsed = actionRes.actionMethod,
+                target = rawIntentOrQuery,
+                evidence = actionRes.evidence
+            )
+        }
+
         val beforeScreen = observeScreen(semanticGoal = targetRole)
         val (element, node) = findElementByIntent(rawIntentOrQuery, beforeScreen)
 
@@ -259,12 +313,12 @@ class ScreenUnderstandingEngine(
                 success = false,
                 methodUsed = "INTENT_NOT_FOUND",
                 target = rawIntentOrQuery,
-                evidence = "Could not find element for intent '$rawIntentOrQuery' via Accessibility or Multimodal Vision.",
+                evidence = "Could not find element for intent '$rawIntentOrQuery' via Accessibility, Icon Recognizer, OCR, or Multimodal Vision.",
                 error = "Target not detected"
             )
         }
 
-        // 1. If we have an AccessibilityNodeInfo and it is clickable
+        // 1. Accessibility ACTION_CLICK
         if (node != null && node.isClickable) {
             val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (clicked) {
@@ -364,17 +418,19 @@ class ScreenUnderstandingEngine(
         val id = node.viewId?.lowercase().orEmpty()
 
         return when {
-            t.contains("search") || d.contains("search") || id.contains("search") || id.contains("menu_item_search") -> SemanticTarget.SEARCH
+            t.contains("search") || d.contains("search") || id.contains("search") || id.contains("menu_item_search") || id.contains("search_button") -> SemanticTarget.SEARCH
             t.contains("play") || d.contains("play") || id.contains("play") -> SemanticTarget.PLAY
             t.contains("pause") || d.contains("pause") -> SemanticTarget.PAUSE
-            t.contains("more options") || d.contains("more options") || id.contains("menu") -> SemanticTarget.MORE_OPTIONS
-            t.contains("back") || d.contains("navigate up") || d.contains("back") -> SemanticTarget.BACK
-            t.contains("home") || d.contains("home") -> SemanticTarget.HOME
-            t.contains("settings") || d.contains("settings") -> SemanticTarget.SETTINGS
-            t.contains("share") || d.contains("share") -> SemanticTarget.SHARE
-            t.contains("download") || d.contains("download") -> SemanticTarget.DOWNLOAD
-            node.isEditable || node.className.contains("EditText", ignoreCase = true) -> SemanticTarget.INPUT_FIELD
-            pkg.contains("youtube") && (node.className.contains("ViewGroup") || node.isClickable) && node.bounds.height() > 200 -> SemanticTarget.VIDEO_ITEM
+            t.contains("more options") || d.contains("more options") || id.contains("menu") || d.contains("overflow") -> SemanticTarget.MORE
+            t.contains("back") || d.contains("navigate up") || d.contains("back") || id.contains("back") -> SemanticTarget.BACK
+            t.contains("home") || d.contains("home") || id.contains("home") -> SemanticTarget.HOME
+            t.contains("settings") || d.contains("settings") || id.contains("settings") -> SemanticTarget.SETTINGS
+            t.contains("share") || d.contains("share") || id.contains("share") -> SemanticTarget.SHARE
+            t.contains("download") || d.contains("download") || id.contains("download") -> SemanticTarget.DOWNLOAD
+            t.contains("send") || d.contains("send") || id.contains("send") -> SemanticTarget.SEND
+            t.contains("refresh") || d.contains("refresh") || id.contains("reload") -> SemanticTarget.REFRESH
+            node.isEditable || node.className.contains("EditText", ignoreCase = true) || id.contains("search_src_text") || id.contains("url_bar") -> SemanticTarget.INPUT_FIELD
+            pkg.contains("youtube") && (node.className.contains("ViewGroup") || node.isClickable) && node.bounds.height() > 180 -> SemanticTarget.VIDEO_ITEM
             else -> SemanticTarget.UNKNOWN
         }
     }
@@ -394,3 +450,4 @@ class ScreenUnderstandingEngine(
         return root
     }
 }
+

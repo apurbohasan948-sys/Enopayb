@@ -9,6 +9,11 @@
     <!-- Voice Input & Speech Recognition -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- System & Tool Actions -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -64,6 +69,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Device Admin Receiver -->
+        <receiver
+            android:name=".core.device.JarvisDeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_receiver" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Accessibility Service for Hands Controller -->
         <service
             android:name=".core.accessibility.JarvisAccessibilityService"
@@ -76,6 +95,47 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- Voice Background Foreground Service -->
+        <service
+            android:name=".core.voice.service.JarvisVoiceForegroundService"
+            android:foregroundServiceType="microphone|specialUse"
+            android:exported="false" />
+
+        <!-- Floating HUD Overlay Service -->
+        <service
+            android:name=".core.voice.service.JarvisOverlayService"
+            android:exported="false" />
+
+        <!-- Default Android Assistant Voice Interaction Service -->
+        <service
+            android:name=".core.voice.assistant.JarvisVoiceInteractionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true"
+            android:label="JARVIS Assistant">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/voice_interaction_service" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+
+        <!-- Session Service for Voice Interaction -->
+        <service
+            android:name=".core.voice.assistant.JarvisVoiceInteractionSessionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true" />
+
+        <!-- Recognition Service -->
+        <service
+            android:name=".core.voice.assistant.JarvisRecognitionService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </service>
     </application>
 

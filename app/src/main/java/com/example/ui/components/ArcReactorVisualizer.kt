@@ -81,12 +81,13 @@ fun ArcReactorVisualizer(
     )
 
     val activeColor = when (voiceState) {
-        VoiceState.LISTENING_COMMAND, VoiceState.LISTENING_WAKE_WORD -> JarvisCyan
+        VoiceState.SLEEPING -> if (isSecurityShieldActive) JarvisCyan else JarvisAmber
+        VoiceState.WAKE_DETECTED, VoiceState.LISTENING -> JarvisCyan
         VoiceState.PROCESSING -> JarvisViolet
-        VoiceState.SPEAKING -> JarvisBlue
-        VoiceState.ERROR -> JarvisRed
-        VoiceState.WAKE_WORD_TRIGGERED -> JarvisAmber
-        VoiceState.IDLE -> if (isSecurityShieldActive) JarvisCyan else JarvisAmber
+        VoiceState.ACTING -> JarvisAmber
+        VoiceState.SPEAKING -> JarvisEmerald
+        VoiceState.WAITING_FOR_CONFIRMATION -> JarvisAmber
+        VoiceState.CANCELLED -> JarvisRed
     }
 
     Box(
@@ -191,13 +192,14 @@ fun ArcReactorVisualizer(
             )
             Text(
                 text = when (voiceState) {
-                    VoiceState.IDLE -> "STANDBY"
-                    VoiceState.LISTENING_WAKE_WORD -> "WAKE DETECT"
-                    VoiceState.WAKE_WORD_TRIGGERED -> "ONLINE"
-                    VoiceState.LISTENING_COMMAND -> "LISTENING"
+                    VoiceState.SLEEPING -> "STANDBY"
+                    VoiceState.WAKE_DETECTED -> "ONLINE"
+                    VoiceState.LISTENING -> "LISTENING"
                     VoiceState.PROCESSING -> "REASONING"
+                    VoiceState.ACTING -> "ACTING"
                     VoiceState.SPEAKING -> "SPEAKING"
-                    VoiceState.ERROR -> "ALERT"
+                    VoiceState.WAITING_FOR_CONFIRMATION -> "WAITING"
+                    VoiceState.CANCELLED -> "CANCELLED"
                 },
                 color = activeColor,
                 fontSize = 9.sp,

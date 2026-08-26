@@ -5,15 +5,27 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.local.dao.JarvisDao
+import com.example.data.local.entity.AutonomousTaskEntity
 import com.example.data.local.entity.ChatMessageEntity
+import com.example.data.local.entity.ExperienceEntity
+import com.example.data.local.entity.GeminiTeacherSessionEntity
+import com.example.data.local.entity.HealthEventEntity
 import com.example.data.local.entity.KnowledgeChunkEntity
+import com.example.data.local.entity.KnowledgeVersionEntity
 import com.example.data.local.entity.MemoryCategory
 import com.example.data.local.entity.MemoryEntity
+import com.example.data.local.entity.ScheduledTaskEntity
 import com.example.data.local.entity.SecurityEventEntity
 import com.example.data.local.entity.SkillEntity
 import com.example.data.local.entity.SkillRiskLevel
+import com.example.data.local.entity.SkillSource
+import com.example.data.local.entity.TrainingExampleEntity
+import com.example.data.local.entity.UserCorrectionEntity
+import com.example.data.local.entity.VisualExperienceEntity
+import com.example.data.local.entity.WebResearchRecordEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -25,9 +37,18 @@ import kotlinx.coroutines.launch
         SecurityEventEntity::class,
         ChatMessageEntity::class,
         KnowledgeChunkEntity::class,
-        com.example.data.local.entity.VisualExperienceEntity::class
+        VisualExperienceEntity::class,
+        ExperienceEntity::class,
+        UserCorrectionEntity::class,
+        TrainingExampleEntity::class,
+        GeminiTeacherSessionEntity::class,
+        ScheduledTaskEntity::class,
+        AutonomousTaskEntity::class,
+        KnowledgeVersionEntity::class,
+        HealthEventEntity::class,
+        WebResearchRecordEntity::class
     ],
-    version = 2,
+    version = 4,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -37,6 +58,236 @@ abstract class JarvisDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: JarvisDatabase? = null
 
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS visual_experiences (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        appPackage TEXT NOT NULL,
+                        screenContext TEXT NOT NULL,
+                        semanticRole TEXT NOT NULL,
+                        visualDescription TEXT NOT NULL,
+                        actionTaken TEXT NOT NULL,
+                        result TEXT NOT NULL,
+                        confidence REAL NOT NULL,
+                        boundsLeft INTEGER NOT NULL,
+                        boundsTop INTEGER NOT NULL,
+                        boundsRight INTEGER NOT NULL,
+                        boundsBottom INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                try {
+                    db.execSQL("ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5")
+                    db.execSQL("ALTER TABLE memories ADD COLUMN usageCount INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE memories ADD COLUMN lastUsedAt INTEGER NOT NULL DEFAULT 0")
+                } catch (e: Exception) {}
+
+                try {
+                    db.execSQL("ALTER TABLE skills ADD COLUMN successCount INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE skills ADD COLUMN failureCount INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE skills ADD COLUMN successRate REAL NOT NULL DEFAULT 1.0")
+                    db.execSQL("ALTER TABLE skills ADD COLUMN confidence REAL NOT NULL DEFAULT 0.95")
+                    db.execSQL("ALTER TABLE skills ADD COLUMN lastSuccessAt INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE skills ADD COLUMN isLearnedFromExperience INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE skills ADD COLUMN source TEXT NOT NULL DEFAULT 'BUILTIN'")
+                    db.execSQL("ALTER TABLE skills ADD COLUMN previousVersionProcedure TEXT DEFAULT NULL")
+                } catch (e: Exception) {}
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS experiences (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        goal TEXT NOT NULL,
+                        appPackage TEXT NOT NULL,
+                        initialScreenSummary TEXT NOT NULL,
+                        actionsTakenJson TEXT NOT NULL,
+                        verificationSummary TEXT NOT NULL,
+                        isSuccess INTEGER NOT NULL,
+                        failedStrategy TEXT,
+                        recoveryStrategy TEXT,
+                        durationMs INTEGER NOT NULL,
+                        confidence REAL NOT NULL,
+                        source TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_corrections (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        userGoal TEXT NOT NULL,
+                        previousAssumption TEXT NOT NULL,
+                        userCorrection TEXT NOT NULL,
+                        correctedAction TEXT NOT NULL,
+                        actualTarget TEXT NOT NULL,
+                        appPackage TEXT NOT NULL,
+                        screenContext TEXT NOT NULL,
+                        confidence REAL NOT NULL,
+                        appliedCount INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS training_dataset (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        inputInstruction TEXT NOT NULL,
+                        contextSummary TEXT NOT NULL,
+                        successfulPlanJson TEXT NOT NULL,
+                        toolsUsedSummary TEXT NOT NULL,
+                        verificationProof TEXT NOT NULL,
+                        qualityScore REAL NOT NULL,
+                        format TEXT NOT NULL,
+                        isCurated INTEGER NOT NULL,
+                        isExported INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS gemini_teacher_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        userGoal TEXT NOT NULL,
+                        lowConfidenceReason TEXT NOT NULL,
+                        teacherModel TEXT NOT NULL,
+                        structuredPlanJson TEXT NOT NULL,
+                        wasExecuted INTEGER NOT NULL,
+                        executionSuccessful INTEGER NOT NULL,
+                        skillExtracted INTEGER NOT NULL,
+                        generatedSkillName TEXT,
+                        latencyMs INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        title TEXT NOT NULL,
+                        instruction TEXT NOT NULL,
+                        triggerType TEXT NOT NULL,
+                        cronOrInterval TEXT NOT NULL,
+                        scheduledTimeMillis INTEGER NOT NULL,
+                        lastExecutedMillis INTEGER NOT NULL,
+                        isEnabled INTEGER NOT NULL,
+                        isCompleted INTEGER NOT NULL,
+                        retryCount INTEGER NOT NULL,
+                        maxRetries INTEGER NOT NULL,
+                        riskLevel TEXT NOT NULL,
+                        requiresConfirmation INTEGER NOT NULL,
+                        payloadJson TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS autonomous_tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        goal TEXT NOT NULL,
+                        taskType TEXT NOT NULL,
+                        priority TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        riskLevel TEXT NOT NULL,
+                        requiresConfirmation INTEGER NOT NULL,
+                        plannedActionsJson TEXT NOT NULL,
+                        executionLogsJson TEXT NOT NULL,
+                        retryCount INTEGER NOT NULL,
+                        maxRetries INTEGER NOT NULL,
+                        failureReason TEXT,
+                        blockingReason TEXT,
+                        targetAppPackage TEXT,
+                        durationMs INTEGER NOT NULL,
+                        resultSummary TEXT,
+                        verificationProof TEXT,
+                        createdAt INTEGER NOT NULL,
+                        startedAt INTEGER NOT NULL,
+                        completedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS knowledge_versions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        knowledgeKey TEXT NOT NULL,
+                        topic TEXT NOT NULL,
+                        version INTEGER NOT NULL,
+                        content TEXT NOT NULL,
+                        summary TEXT NOT NULL,
+                        sourceUrl TEXT,
+                        sourceQualityScore REAL NOT NULL,
+                        confidence REAL NOT NULL,
+                        status TEXT NOT NULL,
+                        oldVersionContent TEXT,
+                        changeReason TEXT NOT NULL,
+                        isAutoUpdated INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS health_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        component TEXT NOT NULL,
+                        severity TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        recoveryAttempted INTEGER NOT NULL,
+                        recoverySuccessful INTEGER NOT NULL,
+                        recoveryActionTaken TEXT,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS web_research_records (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        query TEXT NOT NULL,
+                        userGoal TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        synthesizedSummary TEXT NOT NULL,
+                        sourcesCount INTEGER NOT NULL,
+                        verifiedSourcesJson TEXT NOT NULL,
+                        keyFindingsJson TEXT NOT NULL,
+                        confidence REAL NOT NULL,
+                        durationMs INTEGER NOT NULL,
+                        storedAsKnowledge INTEGER NOT NULL,
+                        errorMessage TEXT,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context, scope: CoroutineScope): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -44,6 +295,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                     JarvisDatabase::class.java,
                     "jarvis_brain.db"
                 )
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .addCallback(JarvisDatabaseCallback(scope))
                     .build()

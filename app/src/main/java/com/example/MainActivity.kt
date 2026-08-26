@@ -26,8 +26,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.GraphicEq
@@ -64,12 +67,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.ui.JarvisViewModel
+import com.example.ui.screens.AutonomousDashboardScreen
+import com.example.ui.screens.CapabilitiesScreen
+import com.example.ui.screens.DebugConsoleScreen
 import com.example.ui.screens.HudConsoleScreen
 import com.example.ui.screens.MemoryScreen
 import com.example.ui.screens.ModelsScreen
 import com.example.ui.screens.RagKnowledgeScreen
 import com.example.ui.screens.SecurityScreen
 import com.example.ui.screens.SkillsScreen
+import com.example.ui.screens.TaskPlanViewerScreen
 import com.example.ui.screens.VisionDebugScreen
 import com.example.ui.theme.JarvisAmber
 import com.example.ui.theme.JarvisBorder
@@ -87,11 +94,14 @@ import com.example.ui.theme.MyApplicationTheme
 
 enum class JarvisTab(val title: String, val icon: ImageVector) {
     CONSOLE("HUD", Icons.Default.Terminal),
+    AUTONOMOUS("AUTO", Icons.Default.AutoAwesome),
+    PLAN("PLAN", Icons.Default.AltRoute),
+    DEBUG("DEBUG", Icons.Default.BugReport),
+    ROLES("ROLES", Icons.Default.Security),
     VISION("VISION", Icons.Default.Visibility),
     MODELS("MODELS", Icons.Default.Memory),
-    MEMORY("MEMORY", Icons.Default.Bookmark),
+    MEMORY("BRAIN", Icons.Default.Bookmark),
     SKILLS("SKILLS", Icons.Default.Build),
-    SECURITY("SECURITY", Icons.Default.Security),
     KNOWLEDGE("RAG", Icons.Default.MenuBook)
 }
 
@@ -306,11 +316,14 @@ fun JarvisApp(viewModel: JarvisViewModel) {
         ) {
             when (currentTab) {
                 JarvisTab.CONSOLE -> HudConsoleScreen(viewModel = viewModel)
+                JarvisTab.AUTONOMOUS -> AutonomousDashboardScreen(viewModel = viewModel)
+                JarvisTab.PLAN -> TaskPlanViewerScreen(viewModel = viewModel)
+                JarvisTab.DEBUG -> DebugConsoleScreen(viewModel = viewModel)
+                JarvisTab.ROLES -> CapabilitiesScreen(viewModel = viewModel)
                 JarvisTab.VISION -> VisionDebugScreen(viewModel = viewModel)
                 JarvisTab.MODELS -> ModelsScreen(viewModel = viewModel)
                 JarvisTab.MEMORY -> MemoryScreen(viewModel = viewModel)
                 JarvisTab.SKILLS -> SkillsScreen(viewModel = viewModel)
-                JarvisTab.SECURITY -> SecurityScreen(viewModel = viewModel)
                 JarvisTab.KNOWLEDGE -> RagKnowledgeScreen(viewModel = viewModel)
             }
         }

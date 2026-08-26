@@ -7,6 +7,13 @@ import androidx.lifecycle.viewModelScope
 import com.example.core.accessibility.AccessibilityDiagnostics
 import com.example.core.accessibility.JarvisAccessibilityService
 import com.example.core.agent.AgentController
+import com.example.core.communication.CommunicationHistoryTracker
+import com.example.core.communication.CommunicationIntent
+import com.example.core.communication.CommunicationIntentParser
+import com.example.core.communication.CommunicationTelemetry
+import com.example.core.contacts.ContactResolutionResult
+import com.example.core.contacts.ContactResolver
+import com.example.core.learning.LearningMetrics
 import com.example.core.learning.TeacherStudentPipeline
 import com.example.core.model.ActiveModelType
 import com.example.core.model.GeminiModelProvider
@@ -28,6 +35,11 @@ import com.example.core.vision.UnifiedScreen
 import com.example.core.vision.VisualElement
 import com.example.core.voice.VoiceManager
 import com.example.core.voice.VoiceState
+import com.example.core.voice.assistant.AssistantRoleHelper
+import com.example.core.voice.context.VoiceConversationContext
+import com.example.core.voice.service.JarvisOverlayService
+import com.example.core.voice.service.JarvisVoiceForegroundService
+import com.example.core.voice.wake.WakeSensitivity
 import com.example.data.local.database.JarvisDatabase
 import com.example.data.local.entity.ChatMessageEntity
 import com.example.data.local.entity.KnowledgeChunkEntity
@@ -36,6 +48,24 @@ import com.example.data.local.entity.MemoryEntity
 import com.example.data.local.entity.SecurityEventEntity
 import com.example.data.local.entity.SkillEntity
 import com.example.data.local.entity.VisualExperienceEntity
+import com.example.core.autonomy.AutonomyMode
+import com.example.core.autonomy.AutonomyPolicyConfig
+import com.example.core.autonomy.AutonomousAgentManager
+import com.example.core.autonomy.MasterStopManager
+import com.example.core.health.ResourceMode
+import com.example.core.health.ResourceSnapshot
+import com.example.core.health.SystemHealthReport
+import com.example.core.model.LocalSLMModelProvider
+import com.example.core.research.KnowledgeUpdateProposal
+import com.example.data.local.entity.AutonomousTaskEntity
+import com.example.data.local.entity.AutonomousTaskPriority
+import com.example.data.local.entity.AutonomousTaskType
+import com.example.data.local.entity.HealthEventEntity
+import com.example.data.local.entity.HealthSeverity
+import com.example.data.local.entity.KnowledgeVersionEntity
+import com.example.data.local.entity.ScheduleTriggerType
+import com.example.data.local.entity.ScheduledTaskEntity
+import com.example.data.local.entity.WebResearchRecordEntity
 import com.example.data.local.preference.JarvisPreferences
 import com.example.data.repository.JarvisRepository
 import kotlinx.coroutines.Dispatchers
@@ -71,15 +101,92 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val database = JarvisDatabase.getDatabase(application, viewModelScope)
     private val repository = JarvisRepository(database.jarvisDao())
 
+    val preferences = JarvisPreferences(application)
+    val memoryManager = com.example.core.memory.MemoryManager(database.jarvisDao())
+    val memoryRetriever = com.example.core.memory.MemoryRetriever(database.jarvisDao())
+    val experienceManager = com.example.core.learning.ExperienceManager(database.jarvisDao())
+    val skillManager = com.example.core.learning.SkillManager(database.jarvisDao())
+    val userCorrectionLearner = com.example.core.learning.UserCorrectionLearner(database.jarvisDao())
+    val geminiTeacher = com.example.core.learning.GeminiTeacher(database.jarvisDao(), preferences)
+    val trainingDatasetManager = com.example.core.learning.TrainingDatasetManager(database.jarvisDao())
+    val localModelTrainer = com.example.core.learning.LocalModelTrainer(database.jarvisDao())
+
+    // Phase 9: Engines and Managers
+    val cloudUsagePolicy = com.example.core.model.CloudUsagePolicy(application)
+    val performanceMonitor = com.example.core.model.PerformanceMonitor(application)
+    val modelProfileManager = com.example.core.model.ModelProfileManager(application)
+    val modelLifecycleManager = com.example.core.model.ModelLifecycleManager(application, viewModelScope)
+    val screenStateCache = com.example.core.vision.ScreenStateCache()
+    val actionCache = com.example.core.agent.ActionCache()
+    val memoryMaintenanceEngine = com.example.core.memory.MemoryMaintenanceEngine(database.jarvisDao())
+    val skillOptimizer = com.example.core.learning.SkillOptimizer(database.jarvisDao())
+    val brainBackupManager = com.example.core.memory.BrainBackupManager(application, database.jarvisDao())
+    val modelUpdateManager = com.example.core.model.ModelUpdateManager(application)
+    val crashRecoveryManager = com.example.core.health.CrashRecoveryManager(application, database.jarvisDao())
+    val modelProviderManager = com.example.core.model.ModelProviderManager(application, preferences)
+    val localKnowledgeRetriever = com.example.core.rag.LocalKnowledgeRetriever(database.jarvisDao())
+
     val voiceManager = VoiceManager(application)
+    val capabilityManager = com.example.core.capability.CapabilityManager(application)
 
     val localVisionProvider = LocalVisionProvider()
     val geminiVisionProvider = GeminiVisionProvider()
     val hybridVisionProvider = HybridVisionProvider(localVisionProvider, geminiVisionProvider, repository)
+    val visionRouter = com.example.core.vision.VisionRouter(localVisionProvider, geminiVisionProvider, cloudUsagePolicy)
     val screenEngine = ScreenUnderstandingEngine(application, hybridVisionProvider, repository)
 
     private val toolRouter = ToolRouter(application, screenEngine)
     val agentController = AgentController(application, toolRouter, screenEngine)
+
+    // Phase 8 & 9 autonomous dependencies
+    val localSLMProvider = LocalSLMModelProvider(application)
+    val autonomousAgentManager: AutonomousAgentManager by lazy {
+        AutonomousAgentManager(
+            context = application,
+            dao = database.jarvisDao(),
+            capabilityManager = capabilityManager,
+            securityPolicyEngine = SecurityPolicyEngine,
+            geminiProvider = geminiProvider,
+            localSLMProvider = localSLMProvider,
+            agentCoreProvider = { jarvisAgentCore },
+            coroutineScope = viewModelScope
+        )
+    }
+
+    val offlineManager = com.example.core.model.OfflineManager(
+        application,
+        com.example.core.health.NetworkStateMonitor(application)
+    )
+
+    val modelRouter = com.example.core.model.ModelRouter(
+        memoryRetriever,
+        skillManager,
+        preferences,
+        cloudUsagePolicy,
+        offlineManager
+    )
+
+    val worldModel = com.example.core.agent.DeviceWorldModel(application, capabilityManager)
+    val jarvisAgentCore = com.example.core.agent.JarvisAgentCore(
+        context = application,
+        toolRouter = toolRouter,
+        screenEngine = screenEngine,
+        worldModel = worldModel,
+        repository = repository,
+        voiceManager = voiceManager,
+        preferences = preferences,
+        memoryManager = memoryManager,
+        memoryRetriever = memoryRetriever,
+        experienceManager = experienceManager,
+        skillManager = skillManager,
+        userCorrectionLearner = userCorrectionLearner,
+        geminiTeacher = geminiTeacher,
+        trainingDatasetManager = trainingDatasetManager,
+        modelRouter = modelRouter
+    )
+
+    private val _capabilitiesList = MutableStateFlow(capabilityManager.getAllCapabilities())
+    val capabilitiesList: StateFlow<List<com.example.core.capability.CapabilityItem>> = _capabilitiesList.asStateFlow()
 
     private val localProvider = LocalModelProvider()
     private val geminiProvider = GeminiModelProvider()
@@ -95,6 +202,21 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val allSkills: StateFlow<List<SkillEntity>> = repository.allSkills
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val allExperiences: StateFlow<List<com.example.data.local.entity.ExperienceEntity>> = repository.allExperiences
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allUserCorrections: StateFlow<List<com.example.data.local.entity.UserCorrectionEntity>> = repository.allUserCorrections
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allTrainingExamples: StateFlow<List<com.example.data.local.entity.TrainingExampleEntity>> = repository.allTrainingExamples
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allTeacherSessions: StateFlow<List<com.example.data.local.entity.GeminiTeacherSessionEntity>> = repository.allTeacherSessions
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _learningMetrics = MutableStateFlow(com.example.core.learning.LearningMetrics())
+    val learningMetrics: StateFlow<com.example.core.learning.LearningMetrics> = _learningMetrics.asStateFlow()
+
     val securityEvents: StateFlow<List<SecurityEventEntity>> = repository.allSecurityEvents
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -104,10 +226,51 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val visualExperiences: StateFlow<List<VisualExperienceEntity>> = repository.allVisualExperiences
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Vision Streams
+    // Phase 8: Autonomous Streams
+    val autonomyMode: StateFlow<AutonomyMode> = autonomousAgentManager.autonomyMode
+    val autonomyPolicyConfig: StateFlow<AutonomyPolicyConfig> = autonomousAgentManager.policyConfig
+    val isEmergencyStopActive: StateFlow<Boolean> = MasterStopManager.isEmergencyStopActive
+    val lastEmergencyStopReason: StateFlow<String?> = MasterStopManager.lastStopReason
+
+    val allAutonomousTasks: StateFlow<List<AutonomousTaskEntity>> = database.jarvisDao().getAllAutonomousTasks()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val activeRunningAutonomousTask: StateFlow<AutonomousTaskEntity?> = autonomousAgentManager.taskQueue.activeRunningTask
+
+    val allScheduledTasks: StateFlow<List<ScheduledTaskEntity>> = database.jarvisDao().getAllScheduledTasks()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allKnowledgeVersions: StateFlow<List<KnowledgeVersionEntity>> = database.jarvisDao().getAllKnowledgeVersions()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allWebResearchRecords: StateFlow<List<WebResearchRecordEntity>> = database.jarvisDao().getAllWebResearchRecords()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allHealthEvents: StateFlow<List<HealthEventEntity>> = database.jarvisDao().getAllHealthEvents()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val systemHealthReport: StateFlow<SystemHealthReport> = autonomousAgentManager.healthMonitor.healthReport
+    val resourceSnapshot: StateFlow<ResourceSnapshot> = autonomousAgentManager.resourceManager.currentSnapshot
+
+    // Vision Streams (Phase 10: Semantic UI Understanding)
+    val iconRecognizer = screenEngine.iconRecognizer
+    val universalEngine = screenEngine.universalEngine
+    val actionExecutor = screenEngine.actionExecutor
+    val diffEngine = com.example.core.vision.ScreenDiffEngine()
+    val targetMatcher = screenEngine.targetMatcher
     val latestUnifiedScreen: StateFlow<UnifiedScreen?> = screenEngine.latestUnifiedScreen
+    val latestSemanticScreen: StateFlow<com.example.core.vision.SemanticScreenModel?> = universalEngine.latestSemanticScreen
     val latestScreenshotBitmap: StateFlow<Bitmap?> = screenEngine.latestScreenshotBitmap
     val lastDetectedElements: StateFlow<List<VisualElement>> = screenEngine.lastDetectedElements
+
+    private val _latestScreenDiff = MutableStateFlow<com.example.core.vision.ScreenDiffResult?>(null)
+    val latestScreenDiff: StateFlow<com.example.core.vision.ScreenDiffResult?> = _latestScreenDiff.asStateFlow()
+
+    private val _latestMatchedTarget = MutableStateFlow<com.example.core.vision.MatchedTargetResult?>(null)
+    val latestMatchedTarget: StateFlow<com.example.core.vision.MatchedTargetResult?> = _latestMatchedTarget.asStateFlow()
+
+    private val _semanticActionStatus = MutableStateFlow<String?>(null)
+    val semanticActionStatus: StateFlow<String?> = _semanticActionStatus.asStateFlow()
 
     private val _isCloudVisionEnabled = MutableStateFlow(true)
     val isCloudVisionEnabled: StateFlow<Boolean> = _isCloudVisionEnabled.asStateFlow()
@@ -144,8 +307,18 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     val voiceState: StateFlow<VoiceState> = voiceManager.voiceState
     val audioWaveLevel: StateFlow<Float> = voiceManager.audioWaveLevel
+    val liveSpokenText: StateFlow<String> = voiceManager.liveSpokenText
+    val conversationContext: StateFlow<VoiceConversationContext> = voiceManager.conversationContext
+    val isMicrophoneMuted: StateFlow<Boolean> = voiceManager.isMicrophoneMuted
+    val isCloudAllowed: StateFlow<Boolean> = voiceManager.isCloudAllowed
+    val isOverlayActive: StateFlow<Boolean> = JarvisOverlayService.isOverlayActive
+    val isVoiceServiceRunning: StateFlow<Boolean> = JarvisVoiceForegroundService.isRunning
 
-    private val preferences = JarvisPreferences(application)
+    private val _isDefaultAssistant = MutableStateFlow(false)
+    val isDefaultAssistant: StateFlow<Boolean> = _isDefaultAssistant.asStateFlow()
+
+    val communicationTelemetry: StateFlow<CommunicationTelemetry> = CommunicationHistoryTracker.telemetry
+    val communicationHistory: StateFlow<List<CommunicationTelemetry>> = CommunicationHistoryTracker.history
 
     private val _geminiApiKey = MutableStateFlow(preferences.geminiApiKey)
     val geminiApiKey: StateFlow<String> = _geminiApiKey.asStateFlow()
@@ -163,9 +336,92 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val apiTestStatus: StateFlow<ApiTestStatus> = _apiTestStatus.asStateFlow()
 
     init {
+        voiceManager.agentCore = jarvisAgentCore
+        voiceManager.toolRouter = toolRouter
+        voiceManager.repository = repository
         voiceManager.currentLanguage = _currentLanguage.value
         syncGeminiProviderSettings()
         refreshAccessibilityDiagnostics()
+        setupPersistentBrainDirectories()
+        performStartupCrashRecovery()
+        performanceMonitor.captureMemorySnapshot()
+    }
+
+    private fun setupPersistentBrainDirectories() {
+        val dirs = listOf("brain", "memory", "skills", "experiences", "knowledge", "models", "logs", "training_dataset")
+        for (dirName in dirs) {
+            val dir = java.io.File(getApplication<Application>().filesDir, dirName)
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
+        }
+    }
+
+    private fun performStartupCrashRecovery() {
+        viewModelScope.launch {
+            crashRecoveryManager.performStartupCrashRecoveryCheck()
+        }
+    }
+
+    fun exportBrainSnapshot(onExported: (String) -> Unit) {
+        viewModelScope.launch {
+            val result = brainBackupManager.exportBrain()
+            if (result.success && result.exportedJson != null) {
+                onExported(result.exportedJson)
+            }
+        }
+    }
+
+    fun importBrainSnapshot(json: String, onResult: (com.example.core.memory.BrainBackupResult) -> Unit) {
+        viewModelScope.launch {
+            val result = brainBackupManager.importBrain(json)
+            onResult(result)
+        }
+    }
+
+    fun runMemoryCompaction(onResult: (com.example.core.memory.MaintenanceReport) -> Unit) {
+        viewModelScope.launch {
+            val report = memoryMaintenanceEngine.runMaintenance()
+            onResult(report)
+        }
+    }
+
+    fun runSkillOptimization(onResult: (com.example.core.learning.SkillOptimizationReport) -> Unit) {
+        viewModelScope.launch {
+            val report = skillOptimizer.optimizeSkills()
+            onResult(report)
+        }
+    }
+
+    fun setCloudUsagePolicy(
+        enabled: Boolean,
+        wifiOnly: Boolean,
+        limit: Int,
+        visionAllowed: Boolean
+    ) {
+        cloudUsagePolicy.updatePolicy(
+            isGeminiEnabled = enabled,
+            isWifiOnly = wifiOnly,
+            dailyRequestLimit = limit,
+            isVisionAllowed = visionAllowed
+        )
+    }
+
+    fun setModelProfile(profile: com.example.core.model.ModelSizeProfile) {
+        modelProfileManager.setProfile(profile)
+        viewModelScope.launch {
+            modelLifecycleManager.ensureModelReady(profile.modelName)
+        }
+    }
+
+    fun unloadModelMemory() {
+        modelLifecycleManager.unloadModel()
+    }
+
+    fun reloadModelMemory() {
+        viewModelScope.launch {
+            modelLifecycleManager.ensureModelReady(modelProfileManager.currentProfile.value.modelName)
+        }
     }
 
     fun refreshAccessibilityDiagnostics() {
@@ -306,6 +562,247 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
 
+            // 2.3 Deterministic No-LLM Command Fast Path (Zero token, sub-10ms)
+            val deterministicMatch = com.example.core.model.IntentRouter.matchCommand(trimmed)
+            if (deterministicMatch.isMatched) {
+                val startNs = System.currentTimeMillis()
+                if (deterministicMatch.toolIntent != null) {
+                    val toolResult = toolRouter.executeTool(deterministicMatch.toolIntent)
+                    _lastExecutionResult.value = toolResult
+                    val latency = System.currentTimeMillis() - startNs
+                    performanceMonitor.recordNoAiTask(latency)
+                    val reply = deterministicMatch.directOutput ?: toolResult.output
+                    repository.insertChatMessage(
+                        ChatMessageEntity(
+                            role = "JARVIS",
+                            message = reply,
+                            providerType = "NO_AI_DETERMINISTIC",
+                            toolCallInfo = deterministicMatch.toolIntent.toolName,
+                            latencyMs = latency
+                        )
+                    )
+                    voiceManager.speak(reply)
+                } else {
+                    val latency = 2L
+                    performanceMonitor.recordNoAiTask(latency)
+                    val reply = deterministicMatch.directOutput ?: "Processed."
+                    repository.insertChatMessage(
+                        ChatMessageEntity(
+                            role = "JARVIS",
+                            message = reply,
+                            providerType = "NO_AI_DETERMINISTIC",
+                            latencyMs = latency
+                        )
+                    )
+                    voiceManager.speak(reply)
+                }
+                _isProcessing.value = false
+                return@launch
+            }
+
+            // 2.5 Communication & Confirmation Intent Handling
+            val commIntent = CommunicationIntentParser.parse(trimmed)
+
+            // Handle direct user confirmation if an action is pending
+            if (_pendingConfirmationIntent.value != null) {
+                if (commIntent is CommunicationIntent.UserConfirmation) {
+                    if (commIntent.confirmed) {
+                        approvePendingTool()
+                    } else {
+                        cancelPendingTool()
+                    }
+                    _isProcessing.value = false
+                    return@launch
+                }
+            }
+
+            // Handle dedicated Communication Intents
+            when (commIntent) {
+                is CommunicationIntent.FindContact -> {
+                    val result = toolRouter.executeTool(
+                        ToolIntent("find_contact", mapOf("query" to commIntent.contactQuery), "LOW")
+                    )
+                    _lastExecutionResult.value = result
+                    val reply = result.output
+                    repository.insertChatMessage(
+                        ChatMessageEntity(
+                            role = "JARVIS",
+                            message = reply,
+                            providerType = "COMMUNICATION_ENGINE",
+                            toolCallInfo = "find_contact"
+                        )
+                    )
+                    voiceManager.speak(reply)
+                    _isProcessing.value = false
+                    return@launch
+                }
+
+                is CommunicationIntent.MakeCall -> {
+                    val app = getApplication<Application>()
+                    val contactRes = ContactResolver.searchContacts(app, commIntent.contactQuery)
+                    var targetNumber = commIntent.directNumber
+                    var targetName = commIntent.contactQuery
+
+                    when (contactRes) {
+                        is ContactResolutionResult.SingleMatch -> {
+                            targetNumber = contactRes.contact.phoneNumber
+                            targetName = contactRes.contact.name
+                        }
+                        is ContactResolutionResult.MultipleMatches -> {
+                            val list = contactRes.matches.joinToString(", ") { "${it.name} (${it.phoneNumber})" }
+                            val msg = "Found multiple contacts matching '${commIntent.contactQuery}': $list. Which one would you like to call?"
+                            repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
+                            voiceManager.speak(msg)
+                            _isProcessing.value = false
+                            return@launch
+                        }
+                        is ContactResolutionResult.NoMatch -> {
+                            if (targetNumber == null) {
+                                val msg = "No contact found with name '${commIntent.contactQuery}' in your address book."
+                                repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
+                                voiceManager.speak(msg)
+                                _isProcessing.value = false
+                                return@launch
+                            }
+                        }
+                        else -> {}
+                    }
+
+                    val finalNumber = targetNumber ?: commIntent.contactQuery
+                    val toolIntent = ToolIntent("make_phone_call", mapOf("contact_name" to targetName, "number" to finalNumber), "HIGH")
+                    _pendingConfirmationIntent.value = toolIntent
+
+                    val confirmMsg = "Ready to call $targetName ($finalNumber). Should I proceed?"
+                    repository.insertChatMessage(
+                        ChatMessageEntity(
+                            role = "JARVIS",
+                            message = confirmMsg,
+                            providerType = "COMMUNICATION_ENGINE",
+                            toolCallInfo = "make_phone_call"
+                        )
+                    )
+                    voiceManager.speak(confirmMsg)
+                    _isProcessing.value = false
+                    return@launch
+                }
+
+                is CommunicationIntent.SendSms -> {
+                    val app = getApplication<Application>()
+                    val contactRes = ContactResolver.searchContacts(app, commIntent.contactQuery)
+                    var targetNumber = commIntent.directNumber
+                    var targetName = commIntent.contactQuery
+
+                    when (contactRes) {
+                        is ContactResolutionResult.SingleMatch -> {
+                            targetNumber = contactRes.contact.phoneNumber
+                            targetName = contactRes.contact.name
+                        }
+                        is ContactResolutionResult.MultipleMatches -> {
+                            val list = contactRes.matches.joinToString(", ") { "${it.name} (${it.phoneNumber})" }
+                            val msg = "Found multiple contacts matching '${commIntent.contactQuery}': $list. Which one should I text?"
+                            repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
+                            voiceManager.speak(msg)
+                            _isProcessing.value = false
+                            return@launch
+                        }
+                        is ContactResolutionResult.NoMatch -> {
+                            if (targetNumber == null) {
+                                val msg = "Cannot find contact '${commIntent.contactQuery}' to send SMS."
+                                repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
+                                voiceManager.speak(msg)
+                                _isProcessing.value = false
+                                return@launch
+                            }
+                        }
+                        else -> {}
+                    }
+
+                    val finalNumber = targetNumber ?: commIntent.contactQuery
+                    val toolIntent = ToolIntent(
+                        "send_sms",
+                        mapOf("recipient" to targetName, "number" to finalNumber, "message" to commIntent.messageText),
+                        "HIGH"
+                    )
+                    _pendingConfirmationIntent.value = toolIntent
+
+                    val confirmMsg = "Ready to send SMS to $targetName ($finalNumber):\n\"${commIntent.messageText}\"\nShould I send it?"
+                    repository.insertChatMessage(
+                        ChatMessageEntity(
+                            role = "JARVIS",
+                            message = confirmMsg,
+                            providerType = "COMMUNICATION_ENGINE",
+                            toolCallInfo = "send_sms"
+                        )
+                    )
+                    voiceManager.speak("Ready to send SMS to $targetName. Should I send it?")
+                    _isProcessing.value = false
+                    return@launch
+                }
+
+                is CommunicationIntent.SendWhatsAppMessage -> {
+                    val app = getApplication<Application>()
+                    val contactRes = ContactResolver.searchContacts(app, commIntent.contactQuery)
+                    var targetName = commIntent.contactQuery
+
+                    if (contactRes is ContactResolutionResult.SingleMatch) {
+                        targetName = contactRes.contact.name
+                    } else if (contactRes is ContactResolutionResult.MultipleMatches) {
+                        val list = contactRes.matches.joinToString(", ") { "${it.name} (${it.phoneNumber})" }
+                        val msg = "Found multiple contacts matching '${commIntent.contactQuery}': $list. Which one should I message on WhatsApp?"
+                        repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
+                        voiceManager.speak(msg)
+                        _isProcessing.value = false
+                        return@launch
+                    }
+
+                    val toolIntent = ToolIntent(
+                        "send_whatsapp_message",
+                        mapOf("contact_name" to targetName, "message" to commIntent.messageText),
+                        "HIGH"
+                    )
+                    _pendingConfirmationIntent.value = toolIntent
+
+                    val confirmMsg = "Ready to send WhatsApp message to $targetName:\n\"${commIntent.messageText}\"\nShould I proceed?"
+                    repository.insertChatMessage(
+                        ChatMessageEntity(
+                            role = "JARVIS",
+                            message = confirmMsg,
+                            providerType = "COMMUNICATION_ENGINE",
+                            toolCallInfo = "send_whatsapp_message"
+                        )
+                    )
+                    voiceManager.speak("Ready to send WhatsApp message to $targetName. Should I proceed?")
+                    _isProcessing.value = false
+                    return@launch
+                }
+
+                is CommunicationIntent.OpenWhatsApp -> {
+                    val target = commIntent.contactQuery
+                    val toolResult = if (target != null) {
+                        toolRouter.executeTool(ToolIntent("open_whatsapp_chat", mapOf("contact_name" to target), "LOW"))
+                    } else {
+                        toolRouter.executeTool(ToolIntent("open_app", mapOf("app_name" to "WhatsApp"), "LOW"))
+                    }
+                    _lastExecutionResult.value = toolResult
+                    val reply = toolResult.output
+                    repository.insertChatMessage(
+                        ChatMessageEntity(
+                            role = "JARVIS",
+                            message = reply,
+                            providerType = "COMMUNICATION_ENGINE",
+                            toolCallInfo = "open_whatsapp"
+                        )
+                    )
+                    voiceManager.speak(reply)
+                    _isProcessing.value = false
+                    return@launch
+                }
+
+                else -> {
+                    // Proceed to Universal Task Planner / Model
+                }
+            }
+
             // 3. Multi-Step Task Planner Check (PHASE H)
             val multiStepPlan = AgentController.planTaskForQuery(trimmed)
             if (multiStepPlan != null) {
@@ -358,8 +855,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
             // 5. Invoke Active Model Provider
             val provider: ModelProvider = when (_activeModelType.value) {
-                ActiveModelType.LOCAL_GGUF_CPU -> localProvider
-                ActiveModelType.GEMINI_CLOUD_TEACHER -> geminiProvider
+                ActiveModelType.LOCAL_GGUF_CPU, ActiveModelType.LOCAL_SLM -> localProvider
+                ActiveModelType.GEMINI_CLOUD_TEACHER, ActiveModelType.GEMINI_FLASH -> geminiProvider
                 ActiveModelType.HYBRID_SUPERVISED -> hybridProvider
             }
 
@@ -621,13 +1118,34 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun refreshCapabilities() {
+        _capabilitiesList.value = capabilityManager.getAllCapabilities()
+    }
+
+    fun executeGoal(goal: String) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            refreshAccessibilityDiagnostics()
+            refreshCapabilities()
+            jarvisAgentCore.executeGoal(goal, viewModelScope)
+            _isProcessing.value = false
+            refreshAccessibilityDiagnostics()
+        }
+    }
+
+    fun executeAutonomousGoal(goal: String) {
+        executeGoal(goal)
+    }
+
     // === Export / Import Brain ===
     fun exportBrain(onExported: (String) -> Unit) {
         viewModelScope.launch {
             val json = repository.exportBrainJson(
-                allMemories.value,
-                allSkills.value,
-                allKnowledgeChunks.value
+                memories = allMemories.value,
+                skills = allSkills.value,
+                knowledge = allKnowledgeChunks.value,
+                experiences = allExperiences.value,
+                corrections = allUserCorrections.value
             )
             onExported(json)
         }
@@ -689,6 +1207,109 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // === Phase 10: Semantic UI Understanding, Icon Recognition & Screen Control ===
+
+    fun observeSemanticScreen(taskGoal: String? = null, forceVisualScan: Boolean = true) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            val semanticModel = universalEngine.observeScreen(
+                taskGoal = taskGoal,
+                forceVisualScan = forceVisualScan
+            )
+            _isProcessing.value = false
+            refreshAccessibilityDiagnostics()
+
+            val msg = "[SEMANTIC SCREEN MODEL]\nPackage: ${semanticModel.packageName}\nType: ${semanticModel.screenType} | Dialog: ${semanticModel.isDialogActive}\nTotal Elements: ${semanticModel.elements.size}\nIcons Identified: ${semanticModel.elements.count { it.source == "ICON_RECOGNIZER" || it.source == "HYBRID_ICON" }}\nConfidence: ${(semanticModel.screenConfidence * 100).toInt()}%\nTitle: ${semanticModel.screenTitle}"
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "VISION",
+                    message = msg,
+                    providerType = "UNIVERSAL_VISION"
+                )
+            )
+            voiceManager.speak("Semantic screen model updated. ${semanticModel.elements.size} elements identified.")
+        }
+    }
+
+    fun testSemanticTargetMatch(goal: String) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            val semanticModel = universalEngine.observeScreen(taskGoal = goal, forceVisualScan = false)
+            val match = targetMatcher.matchTarget(goal, semanticModel)
+            _latestMatchedTarget.value = match
+            _isProcessing.value = false
+
+            val selected = match.selectedElement
+            val msg = if (selected != null) {
+                "[TARGET MATCHED: '$goal']\nRole: ${match.targetRole}\nLabel/Meaning: ${selected.label ?: selected.iconMeaning ?: selected.description}\nConfidence: ${(match.confidence * 100).toInt()}%\nBounds: ${selected.bounds}\nReason: ${match.reason}"
+            } else {
+                "[TARGET NOT FOUND: '$goal']\nReason: ${match.reason}"
+            }
+
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "VISION",
+                    message = msg,
+                    providerType = "SEMANTIC_MATCHER"
+                )
+            )
+            voiceManager.speak(if (selected != null) "Matched target for $goal" else "Could not match target for $goal")
+        }
+    }
+
+    fun testSemanticActionExecution(targetGoal: String, actionType: String = "CLICK", textPayload: String? = null) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _semanticActionStatus.value = "Executing $actionType on '$targetGoal'..."
+            val beforeScreen = universalEngine.latestSemanticScreen.value
+            val result = actionExecutor.executeAction(
+                targetGoalOrRole = targetGoal,
+                actionType = actionType,
+                textToType = textPayload,
+                expectedOutcome = "Target responds to $actionType"
+            )
+            val afterScreen = universalEngine.observeScreen(taskGoal = targetGoal)
+            val diff = diffEngine.computeDiff(beforeScreen, afterScreen, expectedOutcome = "Target responds to $actionType")
+            _latestScreenDiff.value = diff
+            _semanticActionStatus.value = if (result.success) "SUCCESS: ${result.actionMethod}" else "FAILED: ${result.evidence}"
+            _isProcessing.value = false
+            refreshAccessibilityDiagnostics()
+
+            val msg = "[SEMANTIC ACTION: $actionType on '$targetGoal']\nStatus: ${if (result.success) "SUCCESS" else "FAILED"}\nMethod: ${result.actionMethod}\nEvidence: ${result.evidence}\nScreen Transition: ${diff.transitionType} (${diff.summary})"
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "ACTION",
+                    message = msg,
+                    providerType = "SEMANTIC_EXECUTOR"
+                )
+            )
+            voiceManager.speak(if (result.success) "Action succeeded on $targetGoal" else "Action failed on $targetGoal")
+        }
+    }
+
+    fun testIconRecognitionOnScreen() {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            val semanticModel = universalEngine.observeScreen(forceVisualScan = true)
+            val iconElements = semanticModel.elements.filter { it.iconMeaning != null || it.source == "ICON_RECOGNIZER" || it.source == "HYBRID_ICON" }
+            _isProcessing.value = false
+
+            val listSummary = iconElements.joinToString("\n") { elem ->
+                "• [${elem.role}] Meaning: '${elem.iconMeaning ?: elem.label}' (Conf: ${(elem.confidence * 100).toInt()}%, Bounds: ${elem.bounds})"
+            }
+
+            val msg = "[ICON RECOGNITION RESULTS]\nDetected ${iconElements.size} visual icons:\n${if (listSummary.isNotEmpty()) listSummary else "No standalone icons detected."}"
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "VISION",
+                    message = msg,
+                    providerType = "ICON_RECOGNIZER"
+                )
+            )
+            voiceManager.speak("Identified ${iconElements.size} visual UI icons.")
+        }
+    }
+
     fun testPlayTomAndJerry() {
         viewModelScope.launch {
             val plan = AgentController.planTaskForQuery("Play Tom and Jerry") ?: return@launch
@@ -698,9 +1319,358 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun testContactResolution(query: String = "Hammad") {
+        viewModelScope.launch {
+            val result = toolRouter.executeTool(ToolIntent("find_contact", mapOf("query" to query), "LOW"))
+            _lastExecutionResult.value = result
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "COMMUNICATION",
+                    message = "[CONTACT SEARCH: $query]\n${result.output}\nEvidence: ${result.evidence ?: "Verified"}",
+                    providerType = "CONTACT_RESOLVER"
+                )
+            )
+            voiceManager.speak(result.output)
+        }
+    }
+
+    fun testMakeCall(contact: String = "Hammad") {
+        sendUserPrompt("Call $contact")
+    }
+
+    fun testSendSms(contact: String = "Hammad", message: String = "I will call later") {
+        sendUserPrompt("Send $contact an SMS saying $message")
+    }
+
+    fun testSendWhatsApp(contact: String = "Hammad", message: String = "I'm on my way") {
+        sendUserPrompt("Send $contact a WhatsApp message saying $message")
+    }
+
+    fun testOpenWhatsApp(contact: String = "Hammad") {
+        sendUserPrompt("Open WhatsApp and find $contact")
+    }
+
     fun clearVisualExperiences() {
         viewModelScope.launch {
             repository.clearVisualExperiences()
         }
+    }
+
+    fun refreshDefaultAssistantStatus() {
+        _isDefaultAssistant.value = AssistantRoleHelper.isDefaultAssistant(getApplication())
+    }
+
+    fun openDefaultAssistantSettings() {
+        AssistantRoleHelper.openDefaultAssistantSettings(getApplication())
+    }
+
+    fun startVoiceListening() {
+        voiceManager.startListeningForCommand()
+    }
+
+    fun stopVoiceSpeaking() {
+        voiceManager.stopSpeaking()
+    }
+
+    fun handleBargeInStop() {
+        voiceManager.interactionManager.handleBargeInStop()
+    }
+
+    fun toggleMicrophone(muted: Boolean) {
+        voiceManager.toggleMicrophone(muted)
+    }
+
+    fun setWakeWordEnabled(enabled: Boolean) {
+        voiceManager.setWakeWordEnabled(enabled)
+    }
+
+    fun setWakeSensitivity(sens: WakeSensitivity) {
+        voiceManager.setWakeSensitivity(sens)
+    }
+
+    fun setCloudAllowed(allowed: Boolean) {
+        voiceManager.setCloudAllowed(allowed)
+    }
+
+    fun toggleOverlayHud(context: android.content.Context) {
+        if (JarvisOverlayService.isOverlayActive.value) {
+            JarvisOverlayService.stopOverlay(context)
+        } else {
+            JarvisOverlayService.startOverlay(context)
+        }
+    }
+
+    fun startBackgroundVoiceService(context: android.content.Context) {
+        voiceManager.startBackgroundWakeService()
+    }
+
+    fun stopBackgroundVoiceService(context: android.content.Context) {
+        voiceManager.stopBackgroundWakeService()
+    }
+
+    fun testWakeWordTrigger() {
+        voiceManager.interactionManager.processSpokenCommand("Hey JARVIS")
+    }
+
+    fun testSpokenUtterance(text: String) {
+        voiceManager.simulateVoiceInput(text)
+    }
+
+    // === PHASE 7 LEARNING, SKILLS & MEMORY MANAGEMENT ===
+
+    fun refreshLearningMetrics() {
+        viewModelScope.launch {
+            val memories = allMemories.value.size
+            val experiences = allExperiences.value.size
+            val successes = allExperiences.value.count { it.isSuccess }
+            val failures = experiences - successes
+            val skills = allSkills.value.size
+            val learnedSkills = allSkills.value.count { it.isLearnedFromExperience }
+            val corrections = allUserCorrections.value.size
+            val teacherSessions = allTeacherSessions.value.size
+            val trainingExamples = allTrainingExamples.value.size
+
+            _learningMetrics.value = LearningMetrics(
+                totalMemories = memories,
+                totalExperiences = experiences,
+                successfulExperiences = successes,
+                failedExperiences = failures,
+                totalSkills = skills,
+                learnedSkillsCount = learnedSkills,
+                userCorrectionsCount = corrections,
+                geminiTeachingSessions = teacherSessions,
+                trainingExamplesCount = trainingExamples,
+                localExecutionCount = experiences,
+                geminiAssistedCount = teacherSessions,
+                localAutonomyPercentage = if (experiences + teacherSessions > 0) ((experiences.toFloat() / (experiences + teacherSessions)) * 100).toInt() else 100
+            )
+        }
+    }
+
+    fun recordFactMemory(category: MemoryCategory, key: String, value: String, confidence: Float = 1.0f) {
+        viewModelScope.launch {
+            memoryManager.recordMemory(
+                category = category,
+                key = key,
+                value = value,
+                confidence = confidence,
+                importance = 0.8f,
+                source = "Manual Entry"
+            )
+            refreshLearningMetrics()
+        }
+    }
+
+    fun recordUserCorrection(
+        userGoal: String,
+        previousAssumption: String,
+        userCorrection: String,
+        correctedAction: String,
+        actualTarget: String,
+        appPackage: String = "com.example"
+    ) {
+        viewModelScope.launch {
+            userCorrectionLearner.recordCorrection(
+                userGoal = userGoal,
+                previousAssumption = previousAssumption,
+                userCorrection = userCorrection,
+                correctedAction = correctedAction,
+                actualTarget = actualTarget,
+                appPackage = appPackage,
+                screenContext = "manual_correction"
+            )
+            refreshLearningMetrics()
+        }
+    }
+
+    fun exportTrainingDatasetJson(onExported: (String) -> Unit) {
+        viewModelScope.launch {
+            val json = trainingDatasetManager.exportDataset(com.example.data.local.entity.DatasetFormat.ALPACA)
+            onExported(json)
+        }
+    }
+
+    fun exportFullBrainJson(onExported: (String) -> Unit) {
+        viewModelScope.launch {
+            val memories = repository.searchMemories("")
+            val skills = repository.allSkills.stateIn(this).value
+            val knowledge = repository.searchKnowledge("")
+            val experiences = repository.allExperiences.stateIn(this).value
+            val corrections = repository.allUserCorrections.stateIn(this).value
+
+            val json = repository.exportBrainJson(
+                memories = memories,
+                skills = skills,
+                knowledge = knowledge,
+                experiences = experiences,
+                corrections = corrections
+            )
+            onExported(json)
+        }
+    }
+
+    fun clearAllExperiences() {
+        viewModelScope.launch {
+            repository.clearAllExperiences()
+            refreshLearningMetrics()
+        }
+    }
+
+    fun clearAllUserCorrections() {
+        viewModelScope.launch {
+            repository.clearAllUserCorrections()
+            refreshLearningMetrics()
+        }
+    }
+
+    fun clearTrainingDataset() {
+        viewModelScope.launch {
+            repository.clearTrainingDataset()
+            refreshLearningMetrics()
+        }
+    }
+
+    fun clearTeacherSessions() {
+        viewModelScope.launch {
+            repository.clearTeacherSessions()
+            refreshLearningMetrics()
+        }
+    }
+
+    fun clearLearnedSkills() {
+        viewModelScope.launch {
+            repository.clearLearnedSkills()
+            refreshLearningMetrics()
+        }
+    }
+
+    fun setLearningEnabled(enabled: Boolean) {
+        preferences.isLearningEnabled = enabled
+    }
+
+    fun setStoreExperiencesEnabled(enabled: Boolean) {
+        preferences.isStoreExperiencesEnabled = enabled
+    }
+
+    fun setAutoSkillCreationEnabled(enabled: Boolean) {
+        preferences.isAutoSkillCreationEnabled = enabled
+    }
+
+    fun setStoreTrainingDataEnabled(enabled: Boolean) {
+        preferences.isStoreTrainingDataEnabled = enabled
+    }
+
+    fun setPrivacyFilteringEnabled(enabled: Boolean) {
+        preferences.isPrivacyFilteringEnabled = enabled
+    }
+
+    fun setGeminiTeacherAllowed(allowed: Boolean) {
+        preferences.isGeminiTeacherAllowed = allowed
+    }
+
+    // === PHASE 8 AUTONOMOUS ACTIONS ===
+    fun setAutonomyMode(mode: AutonomyMode) {
+        autonomousAgentManager.setAutonomyMode(mode)
+    }
+
+    fun updateAutonomyPolicy(config: AutonomyPolicyConfig) {
+        autonomousAgentManager.updatePolicyConfig(config)
+    }
+
+    fun triggerEmergencyStop(reason: String = "UI Emergency Button") {
+        autonomousAgentManager.triggerEmergencyStop(reason)
+    }
+
+    fun resetEmergencyStop() {
+        autonomousAgentManager.resetEmergencyStop()
+    }
+
+    fun submitAutonomousGoal(goal: String, priority: AutonomousTaskPriority = AutonomousTaskPriority.MEDIUM) {
+        autonomousAgentManager.submitGoal(goal = goal, priority = priority)
+    }
+
+    fun triggerWebResearch(query: String) {
+        autonomousAgentManager.triggerResearch(query)
+    }
+
+    fun triggerMemoryMaintenance() {
+        autonomousAgentManager.triggerMaintenance()
+    }
+
+    fun scheduleTask(
+        title: String,
+        instruction: String,
+        triggerType: ScheduleTriggerType,
+        timeMillis: Long,
+        cronOrInterval: String = ""
+    ) {
+        viewModelScope.launch {
+            autonomousAgentManager.scheduler.scheduleTask(
+                title = title,
+                instruction = instruction,
+                triggerType = triggerType,
+                scheduledTimeMillis = timeMillis,
+                cronOrInterval = cronOrInterval
+            )
+        }
+    }
+
+    fun toggleScheduledTask(id: Long, enabled: Boolean) {
+        viewModelScope.launch {
+            autonomousAgentManager.scheduler.toggleTaskEnabled(id, enabled)
+        }
+    }
+
+    fun deleteScheduledTask(task: ScheduledTaskEntity) {
+        viewModelScope.launch {
+            autonomousAgentManager.scheduler.deleteScheduledTask(task)
+        }
+    }
+
+    fun cancelAutonomousTask(taskId: Long) {
+        viewModelScope.launch {
+            autonomousAgentManager.taskQueue.cancelTask(taskId)
+        }
+    }
+
+    fun deleteAutonomousTask(task: AutonomousTaskEntity) {
+        viewModelScope.launch {
+            autonomousAgentManager.taskQueue.deleteTask(task)
+        }
+    }
+
+    fun clearAllAutonomousTasks() {
+        viewModelScope.launch {
+            autonomousAgentManager.taskQueue.clearAllTasks()
+        }
+    }
+
+    fun approveKnowledgeUpdate(versionId: Long) {
+        viewModelScope.launch {
+            autonomousAgentManager.knowledgeUpdateManager.approvePendingUpdate(versionId)
+        }
+    }
+
+    fun rollbackKnowledge(key: String, targetVersion: Int) {
+        viewModelScope.launch {
+            autonomousAgentManager.knowledgeUpdateManager.rollbackToVersion(key, targetVersion)
+        }
+    }
+
+    fun attemptSelfRecovery(component: String) {
+        viewModelScope.launch {
+            autonomousAgentManager.healthMonitor.recoveryManager.attemptRecovery(component, "Manual diagnostic recovery triggered")
+            autonomousAgentManager.healthMonitor.performDiagnosticCheck(agentState = "RECOVERY_TEST")
+        }
+    }
+
+    fun performSystemHealthCheck() {
+        viewModelScope.launch {
+            autonomousAgentManager.healthMonitor.performDiagnosticCheck()
+        }
+    }
+
+    fun setResourceMode(mode: ResourceMode) {
+        autonomousAgentManager.resourceManager.setResourceMode(mode)
     }
 }

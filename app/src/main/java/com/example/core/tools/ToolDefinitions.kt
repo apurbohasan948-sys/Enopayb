@@ -135,6 +135,14 @@ object ToolDefinitions {
             requiresConfirmation = false
         ),
         ToolDefinition(
+            name = "find_contact",
+            description = "Search local device contacts by name without inventing phone numbers.",
+            parametersSchema = mapOf("name_query" to "Contact display name or query"),
+            requiredPermissions = listOf("READ_CONTACTS"),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
             name = "get_contacts",
             description = "Search local device contacts by name without inventing phone numbers.",
             parametersSchema = mapOf("name_query" to "Contact display name"),
@@ -147,18 +155,37 @@ object ToolDefinitions {
             description = "Initiate an outgoing phone call to a resolved contact or number.",
             parametersSchema = mapOf("contact_name" to "Name or phone number to call"),
             requiredPermissions = listOf("CALL_PHONE", "READ_CONTACTS"),
-            riskLevel = SkillRiskLevel.MEDIUM,
+            riskLevel = SkillRiskLevel.HIGH,
             requiresConfirmation = true
         ),
         ToolDefinition(
+            name = "get_call_state",
+            description = "Query current telephony call state (IDLE, DIALING, RINGING, ACTIVE, DISCONNECTED).",
+            parametersSchema = emptyMap(),
+            requiredPermissions = listOf("READ_PHONE_STATE"),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "prepare_sms",
+            description = "Prepare an SMS draft for user review before confirmation.",
+            parametersSchema = mapOf(
+                "recipient" to "Contact name or phone number",
+                "message" to "Text body of the SMS"
+            ),
+            requiredPermissions = listOf("READ_CONTACTS"),
+            riskLevel = SkillRiskLevel.MEDIUM,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
             name = "send_sms",
-            description = "Prepare or send an SMS text message to a contact.",
+            description = "Send an SMS text message to a contact.",
             parametersSchema = mapOf(
                 "recipient" to "Contact name or phone number",
                 "message" to "Text body of the SMS"
             ),
             requiredPermissions = listOf("SEND_SMS", "READ_CONTACTS"),
-            riskLevel = SkillRiskLevel.MEDIUM,
+            riskLevel = SkillRiskLevel.HIGH,
             requiresConfirmation = true
         ),
         ToolDefinition(
@@ -168,9 +195,17 @@ object ToolDefinitions {
                 "contact_name" to "Name of contact or phone number",
                 "message" to "Text content of the message"
             ),
-            requiredPermissions = listOf("READ_CONTACTS"),
-            riskLevel = SkillRiskLevel.MEDIUM,
+            requiredPermissions = listOf("READ_CONTACTS", "AccessibilityService"),
+            riskLevel = SkillRiskLevel.HIGH,
             requiresConfirmation = true
+        ),
+        ToolDefinition(
+            name = "verify_message_sent",
+            description = "Verify that a sent message is visible in active conversation window.",
+            parametersSchema = mapOf("message" to "Expected message text to verify"),
+            requiredPermissions = listOf("AccessibilityService"),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
         ),
         ToolDefinition(
             name = "open_whatsapp_chat",

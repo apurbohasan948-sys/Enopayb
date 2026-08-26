@@ -1,125 +1,122 @@
 package com.example.core.voice
 
 import android.content.Context
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
-import android.util.Log
-import kotlinx.coroutines.flow.MutableStateFlow
+import com.example.core.agent.JarvisAgentCore
+import com.example.core.model.ToolIntent
+import com.example.core.tools.ToolRouter
+import com.example.core.voice.context.VoiceConversationContext
+import com.example.core.voice.service.JarvisOverlayService
+import com.example.core.voice.service.JarvisVoiceForegroundService
+import com.example.core.voice.wake.WakeSensitivity
+import com.example.data.repository.JarvisRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import java.util.Locale
 
-enum class VoiceState {
-    IDLE,
-    LISTENING_WAKE_WORD,
-    WAKE_WORD_TRIGGERED,
-    LISTENING_COMMAND,
-    PROCESSING,
-    SPEAKING,
-    ERROR
-}
+class VoiceManager(
+    private val context: Context,
+    agentCoreProvider: (() -> JarvisAgentCore?)? = null,
+    toolRouterProvider: (() -> ToolRouter?)? = null,
+    repositoryProvider: (() -> JarvisRepository?)? = null,
+    coroutineScope: CoroutineScope? = null
+) {
+    private val scope = coroutineScope ?: CoroutineScope(Dispatchers.Main)
 
-class VoiceManager(private val context: Context) : TextToSpeech.OnInitListener {
+    var agentCore: JarvisAgentCore? = null
+    var toolRouter: ToolRouter? = null
+    var repository: JarvisRepository? = null
 
-    private var tts: TextToSpeech? = null
-    private var isTtsReady = false
+    val interactionManager = VoiceInteractionManager(
+        context = context,
+        coroutineScope = scope,
+        agentCoreProvider = { agentCore ?: agentCoreProvider?.invoke() },
+        toolRouterProvider = { toolRouter ?: toolRouterProvider?.invoke() },
+        repositoryProvider = { repository ?: repositoryProvider?.invoke() }
+    )
 
-    private val _voiceState = MutableStateFlow(VoiceState.IDLE)
-    val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
-
-    private val _liveSpokenText = MutableStateFlow("")
-    val liveSpokenText: StateFlow<String> = _liveSpokenText.asStateFlow()
-
-    private val _audioWaveLevel = MutableStateFlow(0.1f)
-    val audioWaveLevel: StateFlow<Float> = _audioWaveLevel.asStateFlow()
+    val voiceState: StateFlow<VoiceState> = interactionManager.voiceState
+    val liveSpokenText: StateFlow<String> = interactionManager.liveSpokenText
+    val audioWaveLevel: StateFlow<Float> = interactionManager.audioWaveLevel
+    val conversationContext: StateFlow<VoiceConversationContext> = interactionManager.conversationContext
+    val pendingConfirmationIntent: StateFlow<ToolIntent?> = interactionManager.pendingConfirmationIntent
+    val isMicrophoneMuted: StateFlow<Boolean> = interactionManager.isMicrophoneMuted
+    val isCloudAllowed: StateFlow<Boolean> = interactionManager.isCloudAllowed
 
     var speechRate: Float = 1.05f
+        set(value) {
+            field = value
+            interactionManager.setSpeechRate(value)
+        }
+
     var speechPitch: Float = 0.95f
-    var currentLanguage: String = "EN" // "EN" or "BN"
-
-    init {
-        tts = TextToSpeech(context.applicationContext, this)
-    }
-
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            isTtsReady = true
-            applyLanguageSettings()
-            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {
-                    _voiceState.value = VoiceState.SPEAKING
-                    _audioWaveLevel.value = 0.8f
-                }
-
-                override fun onDone(utteranceId: String?) {
-                    _voiceState.value = VoiceState.IDLE
-                    _audioWaveLevel.value = 0.05f
-                }
-
-                override fun onError(utteranceId: String?) {
-                    _voiceState.value = VoiceState.IDLE
-                    _audioWaveLevel.value = 0.0f
-                }
-            })
-        } else {
-            Log.e("VoiceManager", "TextToSpeech init failed with status: $status")
+        set(value) {
+            field = value
+            interactionManager.setSpeechPitch(value)
         }
-    }
 
-    fun applyLanguageSettings() {
-        if (!isTtsReady) return
-        val locale = if (currentLanguage == "BN") Locale("bn", "BD") else Locale.US
-        val res = tts?.setLanguage(locale)
-        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-            tts?.setLanguage(Locale.US)
-        }
-        tts?.setSpeechRate(speechRate)
-        tts?.setPitch(speechPitch)
-    }
+    var currentLanguage: String = "EN"
 
     fun speak(text: String, onFinished: (() -> Unit)? = null) {
-        if (!isTtsReady || text.isBlank()) return
-        applyLanguageSettings()
-        _voiceState.value = VoiceState.SPEAKING
-        val params = Bundle().apply {
-            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "JARVIS_REPLY_${System.currentTimeMillis()}")
-        }
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "JARVIS_REPLY")
+        interactionManager.speakDirect(text, onFinished)
     }
 
     fun stopSpeaking() {
-        tts?.stop()
-        _voiceState.value = VoiceState.IDLE
-        _audioWaveLevel.value = 0.0f
+        interactionManager.stopSpeaking()
+    }
+
+    fun startListeningForCommand() {
+        interactionManager.startListeningForCommand()
     }
 
     fun startListeningSimulation(onResult: (String) -> Unit) {
-        _voiceState.value = VoiceState.LISTENING_COMMAND
-        _audioWaveLevel.value = 0.65f
+        interactionManager.startListeningForCommand()
     }
 
     fun simulateVoiceInput(text: String) {
-        _liveSpokenText.value = text
-        _voiceState.value = VoiceState.PROCESSING
-        _audioWaveLevel.value = 0.3f
+        interactionManager.processSpokenCommand(text)
     }
 
     fun setIdle() {
-        _voiceState.value = VoiceState.IDLE
-        _audioWaveLevel.value = 0.05f
+        // Standby
     }
 
     fun setWaveform(level: Float) {
-        _audioWaveLevel.value = level.coerceIn(0.0f, 1.0f)
+        // Handled dynamically by audio visualizer
+    }
+
+    fun setWakeSensitivity(sens: WakeSensitivity) {
+        interactionManager.setWakeSensitivity(sens)
+    }
+
+    fun setWakeWordEnabled(enabled: Boolean) {
+        interactionManager.setWakeWordEnabled(enabled)
+    }
+
+    fun toggleMicrophone(muted: Boolean) {
+        interactionManager.toggleMicrophone(muted)
+    }
+
+    fun setCloudAllowed(allowed: Boolean) {
+        interactionManager.setCloudAllowed(allowed)
+    }
+
+    fun startBackgroundWakeService() {
+        interactionManager.startBackgroundWakeMonitoring()
+    }
+
+    fun stopBackgroundWakeService() {
+        interactionManager.stopBackgroundWakeMonitoring()
+    }
+
+    fun startOverlayHud() {
+        JarvisOverlayService.startOverlay(context)
+    }
+
+    fun stopOverlayHud() {
+        JarvisOverlayService.stopOverlay(context)
     }
 
     fun shutdown() {
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
+        interactionManager.shutdown()
     }
 }

@@ -91,15 +91,24 @@ fun HudConsoleScreen(
     val messages by viewModel.chatMessages.collectAsState()
     val voiceState by viewModel.voiceState.collectAsState()
     val audioWaveLevel by viewModel.audioWaveLevel.collectAsState()
+    val liveSpokenText by viewModel.liveSpokenText.collectAsState()
     val isShieldActive by viewModel.isSecurityShieldActive.collectAsState()
     val activeModelType by viewModel.activeModelType.collectAsState()
     val currentLang by viewModel.currentLanguage.collectAsState()
     val isProcessing by viewModel.isProcessing.collectAsState()
     val pendingIntent by viewModel.pendingConfirmationIntent.collectAsState()
+    val isDefaultAssistant by viewModel.isDefaultAssistant.collectAsState()
+    val isMicrophoneMuted by viewModel.isMicrophoneMuted.collectAsState()
+    val isOverlayActive by viewModel.isOverlayActive.collectAsState()
+    val isVoiceServiceRunning by viewModel.isVoiceServiceRunning.collectAsState()
     val metrics by viewModel.hardwareMetrics.collectAsState()
 
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshDefaultAssistantStatus()
+    }
 
     // Auto-scroll on new messages
     LaunchedEffect(messages.size) {
@@ -113,6 +122,44 @@ fun HudConsoleScreen(
             .fillMaxSize()
             .padding(horizontal = 14.dp, vertical = 6.dp)
     ) {
+        // === Default Android Assistant Setup Alert (If not default) ===
+        if (!isDefaultAssistant) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = JarvisCardBg,
+                border = BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+                    .clickable { viewModel.openDefaultAssistantSettings() }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = JarvisCyan, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Set JARVIS as Default Assistant",
+                            color = JarvisCyan,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Text(
+                        text = "ENABLE >",
+                        color = JarvisAmber,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+
         // === Top HUD Status Bar ===
         Row(
             modifier = Modifier
@@ -123,8 +170,8 @@ fun HudConsoleScreen(
         ) {
             StatusPill(
                 label = when (activeModelType) {
-                    ActiveModelType.LOCAL_GGUF_CPU -> "LOCAL QWEN-1.5B"
-                    ActiveModelType.GEMINI_CLOUD_TEACHER -> "GEMINI TEACHER"
+                    ActiveModelType.LOCAL_GGUF_CPU, ActiveModelType.LOCAL_SLM -> "LOCAL QWEN-1.5B"
+                    ActiveModelType.GEMINI_CLOUD_TEACHER, ActiveModelType.GEMINI_FLASH -> "GEMINI TEACHER"
                     ActiveModelType.HYBRID_SUPERVISED -> "HYBRID SUPERVISED"
                 },
                 icon = Icons.Default.Bolt,
@@ -180,6 +227,68 @@ fun HudConsoleScreen(
                 audioWaveLevel = audioWaveLevel,
                 isSecurityShieldActive = isShieldActive
             )
+        }
+
+        // === Live Spoken Text / State Indicator ===
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = JarvisCardBg,
+            border = BorderStroke(0.6.dp, JarvisBorder),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                color = when (voiceState) {
+                                    VoiceState.SLEEPING -> JarvisCyan
+                                    VoiceState.WAKE_DETECTED, VoiceState.LISTENING -> JarvisBlue
+                                    VoiceState.PROCESSING -> JarvisAmber
+                                    VoiceState.ACTING -> JarvisViolet
+                                    VoiceState.SPEAKING -> JarvisEmerald
+                                    VoiceState.WAITING_FOR_CONFIRMATION -> JarvisAmber
+                                    VoiceState.CANCELLED -> JarvisRed
+                                },
+                                shape = CircleShape
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = when (voiceState) {
+                            VoiceState.SLEEPING -> "STANDBY — SAY \"HEY JARVIS\""
+                            VoiceState.WAKE_DETECTED -> "WAKE DETECTED"
+                            VoiceState.LISTENING -> "LISTENING..."
+                            VoiceState.PROCESSING -> "PROCESSING QUERY..."
+                            VoiceState.ACTING -> "EXECUTING ON DEVICE..."
+                            VoiceState.SPEAKING -> "SPEAKING..."
+                            VoiceState.WAITING_FOR_CONFIRMATION -> "AWAITING VOICE CONFIRMATION"
+                            VoiceState.CANCELLED -> "CANCELLED"
+                        },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = JarvisCyan
+                    )
+                }
+
+                if (liveSpokenText.isNotEmpty()) {
+                    Text(
+                        text = "\"$liveSpokenText\"",
+                        fontSize = 11.sp,
+                        color = Color.White,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
+                    )
+                }
+            }
         }
 
         // === High-Risk Tool Confirmation Banner ===
@@ -239,6 +348,7 @@ fun HudConsoleScreen(
         }
 
         // === Quick Action Prompt Chips ===
+        val context = androidx.compose.ui.platform.LocalContext.current
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -246,22 +356,23 @@ fun HudConsoleScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             val chips = listOf(
-                "TEST 1: Open YouTube" to "open_yt",
-                "TEST 2: Read Screen" to "read_screen",
-                "TEST 3: Find Search" to "find_search",
-                "TEST 4: Tap Search" to "tap_search",
-                "TEST 5: Type Tom and Jerry" to "type_tom_jerry",
-                "TEST 6: Search Tom and Jerry" to "search_tom_jerry",
-                "TEST 7: Play Tom and Jerry" to "play_result",
-                "TEST 8: Scroll Down" to "scroll_down",
-                "TEST 9: Go Back" to "go_back",
-                "TEST 10: Open WhatsApp" to "open_wa",
-                "TEST 11: Find Hammad" to "find_hammad",
-                "TEST 12: Prepare WA Msg" to "prep_wa",
-                "TEST 13: Send WA Msg" to "send_wa",
+                "TEST 1: Hey JARVIS" to "wake_jarvis",
+                "TEST 2: Open YouTube" to "open_yt",
+                "TEST 3: Search Tom & Jerry" to "search_tom_jerry",
+                "TEST 4: Go Back" to "go_back",
+                "TEST 5: Open WhatsApp" to "open_wa",
+                "TEST 6: Find Hammad" to "find_hammad",
+                "TEST 7: Call Hammad" to "call_hammad",
+                "TEST 8: SMS Hammad" to "sms_hammad",
+                "TEST 9: WA Msg Hammad" to "prep_wa",
+                "TEST 10: Yes (Confirm)" to "approve_action",
+                "TEST 11: No (Cancel)" to "reject_action",
+                "TEST 12: Stop (Barge-In)" to "barge_in_stop",
+                "Mic Mute Toggle" to "toggle_mic",
+                "Floating HUD Orb" to "toggle_overlay",
+                "Voice Bg Service" to "toggle_voice_service",
                 "Device Status" to "query_battery_status",
-                "Turn on Flashlight" to "toggle_flashlight",
-                "Security Audit" to "security_audit_check"
+                "Flashlight" to "toggle_flashlight"
             )
             items(chips) { (label, tag) ->
                 Surface(
@@ -270,22 +381,26 @@ fun HudConsoleScreen(
                     border = BorderStroke(0.8.dp, JarvisCyan.copy(alpha = 0.35f)),
                     modifier = Modifier.clickable {
                         when (tag) {
-                            "open_yt" -> viewModel.sendUserPrompt("Open YouTube")
-                            "read_screen" -> viewModel.sendUserPrompt("Read my screen")
-                            "find_search" -> viewModel.sendUserPrompt("Find Search")
-                            "tap_search" -> viewModel.sendUserPrompt("Tap Search")
-                            "type_tom_jerry" -> viewModel.sendUserPrompt("Type Tom and Jerry")
-                            "search_tom_jerry" -> viewModel.sendUserPrompt("Search Tom and Jerry")
-                            "play_result" -> viewModel.sendUserPrompt("Play the first relevant result")
-                            "scroll_down" -> viewModel.sendUserPrompt("Scroll down")
-                            "go_back" -> viewModel.sendUserPrompt("Go back")
-                            "open_wa" -> viewModel.sendUserPrompt("Open WhatsApp")
-                            "find_hammad" -> viewModel.sendUserPrompt("Find Hammad")
-                            "prep_wa" -> viewModel.sendUserPrompt("Prepare a WhatsApp message for Hammad: I am reaching in 5 minutes")
-                            "send_wa" -> viewModel.sendUserPrompt("Send the message")
+                            "wake_jarvis" -> viewModel.testWakeWordTrigger()
+                            "open_yt" -> viewModel.testSpokenUtterance("Open YouTube")
+                            "search_tom_jerry" -> viewModel.testSpokenUtterance("Search Tom and Jerry")
+                            "go_back" -> viewModel.testSpokenUtterance("Go back")
+                            "open_wa" -> viewModel.testSpokenUtterance("Open WhatsApp")
+                            "find_hammad" -> viewModel.testSpokenUtterance("Find contact Hammad")
+                            "call_hammad" -> viewModel.testSpokenUtterance("Call Hammad")
+                            "sms_hammad" -> viewModel.testSpokenUtterance("Send SMS to Hammad saying I will call later")
+                            "prep_wa" -> viewModel.testSpokenUtterance("Send WhatsApp message to Hammad saying I am on my way")
+                            "approve_action" -> viewModel.approvePendingTool()
+                            "reject_action" -> viewModel.cancelPendingTool()
+                            "barge_in_stop" -> viewModel.handleBargeInStop()
+                            "toggle_mic" -> viewModel.toggleMicrophone(!isMicrophoneMuted)
+                            "toggle_overlay" -> viewModel.toggleOverlayHud(context)
+                            "toggle_voice_service" -> {
+                                if (isVoiceServiceRunning) viewModel.stopBackgroundVoiceService(context)
+                                else viewModel.startBackgroundVoiceService(context)
+                            }
                             "query_battery_status" -> viewModel.sendUserPrompt("Check battery status")
                             "toggle_flashlight" -> viewModel.sendUserPrompt("Turn on flashlight")
-                            "security_audit_check" -> viewModel.runSecurityAudit()
                             else -> viewModel.sendUserPrompt(label)
                         }
                     }
@@ -357,24 +472,32 @@ fun HudConsoleScreen(
                 // Mic / Wake-Word trigger button
                 IconButton(
                     onClick = {
-                        if (voiceState == VoiceState.SPEAKING) {
-                            viewModel.voiceManager.stopSpeaking()
-                        } else {
-                            viewModel.sendUserPrompt("Hey JARVIS")
+                        when (voiceState) {
+                            VoiceState.SPEAKING -> viewModel.stopVoiceSpeaking()
+                            VoiceState.LISTENING -> viewModel.handleBargeInStop()
+                            else -> viewModel.startVoiceListening()
                         }
                     },
                     modifier = Modifier
                         .size(40.dp)
                         .background(
-                            if (voiceState == VoiceState.SPEAKING || voiceState == VoiceState.LISTENING_COMMAND) JarvisCyan.copy(alpha = 0.25f)
+                            if (voiceState == VoiceState.SPEAKING || voiceState == VoiceState.LISTENING) JarvisCyan.copy(alpha = 0.25f)
                             else Color.Transparent,
                             CircleShape
                         )
                 ) {
                     Icon(
-                        imageVector = if (voiceState == VoiceState.SPEAKING) Icons.Default.MicOff else Icons.Default.Mic,
+                        imageVector = when (voiceState) {
+                            VoiceState.SPEAKING -> Icons.Default.VolumeUp
+                            VoiceState.LISTENING -> Icons.Default.Mic
+                            else -> if (isMicrophoneMuted) Icons.Default.MicOff else Icons.Default.Mic
+                        },
                         contentDescription = "Voice Input",
-                        tint = if (voiceState == VoiceState.SPEAKING) JarvisAmber else JarvisCyan,
+                        tint = when (voiceState) {
+                            VoiceState.SPEAKING -> JarvisEmerald
+                            VoiceState.LISTENING -> JarvisBlue
+                            else -> if (isMicrophoneMuted) JarvisRed else JarvisCyan
+                        },
                         modifier = Modifier.size(20.dp)
                     )
                 }

@@ -5,11 +5,17 @@ import androidx.room.PrimaryKey
 
 enum class MemoryCategory {
     USER_PREFERENCE,
-    USER_PROFILE,
-    CONVERSATION_SUMMARY,
-    IMPORTANT_FACT,
+    PERSONAL_CONTEXT,
+    TASK_HISTORY,
+    EXPERIENCE,
     SKILL,
     KNOWLEDGE,
+    APP_PATTERN,
+    SCREEN_PATTERN,
+    USER_CORRECTION,
+    IMPORTANT_FACT,
+    USER_PROFILE,
+    CONVERSATION_SUMMARY,
     SECURITY_EVENT
 }
 
@@ -24,5 +30,8 @@ data class MemoryEntity(
     val source: String = "User Conversation",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-    val isEncrypted: Boolean = false
+    val isEncrypted: Boolean = false,
+    val importance: Float = 0.5f,
+    val usageCount: Int = 0,
+    val lastUsedAt: Long = 0L
 )

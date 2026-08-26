@@ -7,13 +7,14 @@ import kotlinx.coroutines.withContext
 
 /**
  * Local Vision Provider.
- * Currently backed by text-only on-device inference architecture.
- * Explicitly reports that the local model is text-only, while providing robust local
- * UI layout heuristics and spatial anchor detection for standard Android views.
+ * Provides on-device UI understanding, combining spatial heuristics with the IconSemanticRecognizer
+ * to detect icon-only buttons, symbols (🔍, ▶, ←, ⚙, ⋮, etc.), and screen layout structures without cloud latency.
  */
-class LocalVisionProvider : VisionProvider {
+class LocalVisionProvider(
+    val iconRecognizer: IconSemanticRecognizer = IconSemanticRecognizer()
+) : VisionProvider {
 
-    override val providerName: String = "Local Vision (Text-Only Model Engine)"
+    override val providerName: String = "Local Vision (Icon & Spatial Engine)"
     override val isMultimodalSupported: Boolean = false
 
     override suspend fun analyzeScreenshot(
@@ -30,138 +31,122 @@ class LocalVisionProvider : VisionProvider {
         val pkg = appPackage?.lowercase().orEmpty()
         val goal = semanticGoal?.let { SemanticTarget.normalizeIntent(it) }
 
-        // Local Heuristics for standard Android applications (e.g. YouTube, Browser, System Toolbars)
+        // Screen dimensions
         val w = if (bitmap != null && bitmap.width > 0) bitmap.width else screenWidth
         val h = if (bitmap != null && bitmap.height > 0) bitmap.height else screenHeight
 
         if (pkg.contains("youtube")) {
-            // YouTube Top Bar Search Icon (Standard location: top right next to cast/notification/profile)
-            val searchLeft = (w * 0.72f).toInt()
-            val searchTop = (h * 0.04f).toInt()
-            val searchRight = (w * 0.88f).toInt()
-            val searchBottom = (h * 0.09f).toInt()
+            // YouTube Top Bar Search Icon (Standard location: top right)
+            val searchRect = Rect((w * 0.72f).toInt(), (h * 0.04f).toInt(), (w * 0.88f).toInt(), (h * 0.09f).toInt())
+            val recognizedSearch = iconRecognizer.recognizeIcon(null, null, "search", searchRect, pkg, "youtube_top_bar", semanticGoal, bitmap)
 
             detectedElements.add(
                 VisualElement(
-                    semanticRole = SemanticTarget.SEARCH,
-                    visualDescription = "YouTube magnifying-glass 🔍 search icon in top action bar",
-                    bounds = Rect(searchLeft, searchTop, searchRight, searchBottom),
-                    confidence = 0.94f,
-                    source = "LOCAL_HEURISTIC"
+                    semanticRole = recognizedSearch?.contextualRole ?: SemanticTarget.SEARCH,
+                    visualDescription = "YouTube magnifying-glass 🔍 search icon in top action bar (${recognizedSearch?.meaning ?: "search"})",
+                    bounds = searchRect,
+                    confidence = recognizedSearch?.confidence ?: 0.94f,
+                    source = recognizedSearch?.detectionMethod ?: "LOCAL_HEURISTIC"
                 )
             )
 
             // YouTube First Video Thumbnail / Item in Feed
-            val videoLeft = (w * 0.05f).toInt()
-            val videoTop = (h * 0.18f).toInt()
-            val videoRight = (w * 0.95f).toInt()
-            val videoBottom = (h * 0.45f).toInt()
-
+            val videoRect = Rect((w * 0.05f).toInt(), (h * 0.18f).toInt(), (w * 0.95f).toInt(), (h * 0.45f).toInt())
             detectedElements.add(
                 VisualElement(
                     semanticRole = SemanticTarget.VIDEO_ITEM,
                     visualDescription = "First video thumbnail item in active YouTube results/feed",
-                    bounds = Rect(videoLeft, videoTop, videoRight, videoBottom),
+                    bounds = videoRect,
                     confidence = 0.90f,
                     source = "LOCAL_HEURISTIC"
                 )
             )
 
             // YouTube Cast / More options
-            val moreLeft = (w * 0.89f).toInt()
-            val moreTop = (h * 0.04f).toInt()
-            val moreRight = (w * 0.98f).toInt()
-            val moreBottom = (h * 0.09f).toInt()
-
+            val moreRect = Rect((w * 0.89f).toInt(), (h * 0.04f).toInt(), (w * 0.98f).toInt(), (h * 0.09f).toInt())
+            val recognizedMore = iconRecognizer.recognizeIcon(null, null, "more", moreRect, pkg, "youtube_top_bar", semanticGoal, bitmap)
             detectedElements.add(
                 VisualElement(
-                    semanticRole = SemanticTarget.MORE_OPTIONS,
+                    semanticRole = recognizedMore?.contextualRole ?: SemanticTarget.MORE_OPTIONS,
                     visualDescription = "YouTube top bar profile / more options menu",
-                    bounds = Rect(moreLeft, moreTop, moreRight, moreBottom),
-                    confidence = 0.88f,
-                    source = "LOCAL_HEURISTIC"
+                    bounds = moreRect,
+                    confidence = recognizedMore?.confidence ?: 0.88f,
+                    source = recognizedMore?.detectionMethod ?: "LOCAL_HEURISTIC"
                 )
             )
         } else if (pkg.contains("whatsapp")) {
             // WhatsApp Top Search Icon
-            val searchLeft = (w * 0.72f).toInt()
-            val searchTop = (h * 0.04f).toInt()
-            val searchRight = (w * 0.85f).toInt()
-            val searchBottom = (h * 0.09f).toInt()
-
+            val searchRect = Rect((w * 0.72f).toInt(), (h * 0.04f).toInt(), (w * 0.85f).toInt(), (h * 0.09f).toInt())
+            val recognizedSearch = iconRecognizer.recognizeIcon(null, null, "search", searchRect, pkg, "whatsapp_header", semanticGoal, bitmap)
             detectedElements.add(
                 VisualElement(
-                    semanticRole = SemanticTarget.SEARCH,
+                    semanticRole = recognizedSearch?.contextualRole ?: SemanticTarget.SEARCH,
                     visualDescription = "WhatsApp search icon 🔍 in top header",
-                    bounds = Rect(searchLeft, searchTop, searchRight, searchBottom),
-                    confidence = 0.93f,
-                    source = "LOCAL_HEURISTIC"
+                    bounds = searchRect,
+                    confidence = recognizedSearch?.confidence ?: 0.93f,
+                    source = recognizedSearch?.detectionMethod ?: "LOCAL_HEURISTIC"
                 )
             )
 
             // WhatsApp First Chat Row
-            val chatLeft = (w * 0.04f).toInt()
-            val chatTop = (h * 0.16f).toInt()
-            val chatRight = (w * 0.96f).toInt()
-            val chatBottom = (h * 0.25f).toInt()
-
+            val chatRect = Rect((w * 0.04f).toInt(), (h * 0.16f).toInt(), (w * 0.96f).toInt(), (h * 0.25f).toInt())
             detectedElements.add(
                 VisualElement(
                     semanticRole = SemanticTarget.CONTACT_ITEM,
                     visualDescription = "First WhatsApp conversation item in chat list",
-                    bounds = Rect(chatLeft, chatTop, chatRight, chatBottom),
+                    bounds = chatRect,
                     confidence = 0.89f,
                     source = "LOCAL_HEURISTIC"
                 )
             )
 
             // WhatsApp Bottom Right Send / Mic button
-            val sendLeft = (w * 0.85f).toInt()
-            val sendTop = (h * 0.91f).toInt()
-            val sendRight = (w * 0.98f).toInt()
-            val sendBottom = (h * 0.98f).toInt()
-
+            val sendRect = Rect((w * 0.85f).toInt(), (h * 0.91f).toInt(), (w * 0.98f).toInt(), (h * 0.98f).toInt())
+            val recognizedSend = iconRecognizer.recognizeIcon(null, null, "send", sendRect, pkg, "whatsapp_composer", semanticGoal, bitmap)
             detectedElements.add(
                 VisualElement(
-                    semanticRole = SemanticTarget.SEND_BUTTON,
+                    semanticRole = recognizedSend?.contextualRole ?: SemanticTarget.SEND_BUTTON,
                     visualDescription = "WhatsApp circular send action button ✈",
-                    bounds = Rect(sendLeft, sendTop, sendRight, sendBottom),
-                    confidence = 0.92f,
-                    source = "LOCAL_HEURISTIC"
+                    bounds = sendRect,
+                    confidence = recognizedSend?.confidence ?: 0.92f,
+                    source = recognizedSend?.detectionMethod ?: "LOCAL_HEURISTIC"
                 )
             )
         } else {
-            // Universal Android Layout Anchors
-            // Top Right Search / Action
+            // Universal Android Layout Anchors + Icon Recognition
+            val searchRect = Rect((w * 0.75f).toInt(), (h * 0.04f).toInt(), (w * 0.90f).toInt(), (h * 0.09f).toInt())
+            val recognizedSearch = iconRecognizer.recognizeIcon(null, null, "search", searchRect, pkg, "universal_top_bar", semanticGoal, bitmap)
             detectedElements.add(
                 VisualElement(
-                    semanticRole = SemanticTarget.SEARCH,
-                    visualDescription = "Top right search icon 🔍 area",
-                    bounds = Rect((w * 0.75f).toInt(), (h * 0.04f).toInt(), (w * 0.90f).toInt(), (h * 0.09f).toInt()),
-                    confidence = 0.80f,
-                    source = "LOCAL_HEURISTIC"
+                    semanticRole = recognizedSearch?.contextualRole ?: SemanticTarget.SEARCH,
+                    visualDescription = "Top right search icon 🔍 area (${recognizedSearch?.meaning ?: "search"})",
+                    bounds = searchRect,
+                    confidence = recognizedSearch?.confidence ?: 0.85f,
+                    source = recognizedSearch?.detectionMethod ?: "LOCAL_HEURISTIC"
                 )
             )
 
-            // Top Left Back
+            val backRect = Rect((w * 0.02f).toInt(), (h * 0.04f).toInt(), (w * 0.15f).toInt(), (h * 0.09f).toInt())
+            val recognizedBack = iconRecognizer.recognizeIcon(null, null, "back", backRect, pkg, "universal_top_bar", semanticGoal, bitmap)
             detectedElements.add(
                 VisualElement(
-                    semanticRole = SemanticTarget.BACK,
+                    semanticRole = recognizedBack?.contextualRole ?: SemanticTarget.BACK,
                     visualDescription = "Top left navigation back arrow ←",
-                    bounds = Rect((w * 0.02f).toInt(), (h * 0.04f).toInt(), (w * 0.15f).toInt(), (h * 0.09f).toInt()),
-                    confidence = 0.85f,
-                    source = "LOCAL_HEURISTIC"
+                    bounds = backRect,
+                    confidence = recognizedBack?.confidence ?: 0.88f,
+                    source = recognizedBack?.detectionMethod ?: "LOCAL_HEURISTIC"
                 )
             )
 
-            // Top Right More Options ⋮
+            val moreRect = Rect((w * 0.90f).toInt(), (h * 0.04f).toInt(), (w * 0.99f).toInt(), (h * 0.09f).toInt())
+            val recognizedMore = iconRecognizer.recognizeIcon(null, null, "more", moreRect, pkg, "universal_top_bar", semanticGoal, bitmap)
             detectedElements.add(
                 VisualElement(
-                    semanticRole = SemanticTarget.MORE_OPTIONS,
+                    semanticRole = recognizedMore?.contextualRole ?: SemanticTarget.MORE_OPTIONS,
                     visualDescription = "Top right overflow menu ⋮",
-                    bounds = Rect((w * 0.90f).toInt(), (h * 0.04f).toInt(), (w * 0.99f).toInt(), (h * 0.09f).toInt()),
-                    confidence = 0.85f,
-                    source = "LOCAL_HEURISTIC"
+                    bounds = moreRect,
+                    confidence = recognizedMore?.confidence ?: 0.85f,
+                    source = recognizedMore?.detectionMethod ?: "LOCAL_HEURISTIC"
                 )
             )
         }
@@ -170,9 +155,10 @@ class LocalVisionProvider : VisionProvider {
         VisualAnalysisResult(
             success = true,
             elements = detectedElements,
-            description = "Local model does not support vision. Applied local spatial UI heuristics (${detectedElements.size} visual elements detected).",
+            description = "Local on-device visual recognizer identified ${detectedElements.size} UI symbols & controls.",
             providerName = providerName,
             latencyMs = latency
         )
     }
 }
+

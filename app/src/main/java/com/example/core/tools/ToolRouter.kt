@@ -16,11 +16,15 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.example.core.accessibility.JarvisAccessibilityService
+import com.example.core.communication.CommunicationHistoryTracker
 import com.example.core.contacts.ContactResolutionResult
 import com.example.core.contacts.ContactResolver
 import com.example.core.model.ToolIntent
+import com.example.core.sms.SmsManagerService
+import com.example.core.telephony.CallManager
 import com.example.core.vision.ScreenUnderstandingEngine
 import com.example.core.vision.SemanticTarget
+import com.example.core.whatsapp.WhatsAppController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URLEncoder
@@ -40,6 +44,10 @@ class ToolRouter(
     private val context: Context,
     val screenEngine: ScreenUnderstandingEngine? = null
 ) {
+
+    val callManager by lazy { CallManager(context) }
+    val smsManagerService by lazy { SmsManagerService(context) }
+    val whatsAppController by lazy { WhatsAppController(context, screenEngine) }
 
     private val cameraManager by lazy {
         context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
@@ -134,15 +142,32 @@ class ToolRouter(
                     val query = args["query"] ?: ""
                     launchWebSearch(query)
                 }
-                "get_contacts" -> {
-                    val query = args["name_query"] ?: args["query"] ?: args["name"] ?: ""
+                "get_contacts", "find_contact" -> {
+                    val query = args["name_query"] ?: args["query"] ?: args["name"] ?: args["target"] ?: ""
                     lookupContacts(query)
                 }
-                "make_phone_call" -> {
-                    val target = args["contact_name"] ?: args["contact"] ?: args["number"] ?: ""
+                "make_phone_call", "make_call", "initiate_call" -> {
+                    val target = args["contact_name"] ?: args["contact"] ?: args["number"] ?: args["target"] ?: ""
                     initiatePhoneCall(target)
                 }
-                "send_sms" -> {
+                "get_call_state" -> {
+                    val state = callManager.callState.value
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "telephony",
+                        action = "get_call_state",
+                        output = "Current call state: ${state.name}",
+                        evidence = "TelephonyCallback queried: ${state.name}",
+                        details = mapOf("callState" to state.name),
+                        verified = true
+                    )
+                }
+                "prepare_sms" -> {
+                    val recipient = args["recipient"] ?: args["contact"] ?: ""
+                    val message = args["message"] ?: args["body"] ?: ""
+                    prepareSmsDraft(recipient, message)
+                }
+                "send_sms", "send_message" -> {
                     val recipient = args["recipient"] ?: args["contact"] ?: ""
                     val message = args["message"] ?: args["body"] ?: ""
                     prepareOrSendSms(recipient, message)
@@ -155,6 +180,10 @@ class ToolRouter(
                 "open_whatsapp_chat" -> {
                     val contactName = args["contact_name"] ?: args["contact"] ?: ""
                     openWhatsAppConversation(contactName)
+                }
+                "verify_message_sent" -> {
+                    val message = args["message"] ?: args["text"] ?: ""
+                    verifyWhatsAppMessage(message)
                 }
                 "get_current_app" -> {
                     val current = JarvisAccessibilityService.currentForegroundApp.value
@@ -593,15 +622,16 @@ class ToolRouter(
 
     private fun lookupContacts(query: String): ToolExecutionResult {
         val result = ContactResolver.searchContacts(context, query)
-        return when (result) {
+        val toolResult = when (result) {
             is ContactResolutionResult.SingleMatch -> {
                 ToolExecutionResult(
                     success = true,
                     tool = "contacts",
-                    action = "get_contacts",
+                    action = "find_contact",
                     output = "Found contact: ${result.contact.name} (${result.contact.phoneNumber})",
-                    evidence = "Single contact match in address book",
-                    details = mapOf("name" to result.contact.name, "number" to result.contact.phoneNumber)
+                    evidence = "Single contact match in address book: ${result.contact.name}",
+                    details = mapOf("name" to result.contact.name, "number" to result.contact.phoneNumber),
+                    verified = true
                 )
             }
             is ContactResolutionResult.MultipleMatches -> {
@@ -609,40 +639,59 @@ class ToolRouter(
                 ToolExecutionResult(
                     success = true,
                     tool = "contacts",
-                    action = "get_contacts",
-                    output = "Found multiple contacts matching '$query': $names. Which one would you like to use?",
+                    action = "find_contact",
+                    output = "Found multiple contacts matching '$query': $names. Which one would you like?",
                     evidence = "Multiple matches (${result.matches.size})",
-                    details = mapOf("matches" to names)
+                    details = mapOf("matches" to names),
+                    verified = true
                 )
             }
             is ContactResolutionResult.NoMatch -> {
                 ToolExecutionResult(
                     success = false,
                     tool = "contacts",
-                    action = "get_contacts",
+                    action = "find_contact",
                     output = "No contacts found matching '$query'.",
-                    errorMessage = "Contact not found."
+                    errorMessage = "Contact not found.",
+                    verified = false
                 )
             }
             is ContactResolutionResult.PermissionRequired -> {
                 ToolExecutionResult(
                     success = false,
                     tool = "contacts",
-                    action = "get_contacts",
+                    action = "find_contact",
                     output = result.message,
-                    errorMessage = "READ_CONTACTS permission missing."
+                    errorMessage = "READ_CONTACTS permission missing.",
+                    verified = false
                 )
             }
             is ContactResolutionResult.Error -> {
                 ToolExecutionResult(
                     success = false,
                     tool = "contacts",
-                    action = "get_contacts",
+                    action = "find_contact",
                     output = result.message,
-                    errorMessage = result.message
+                    errorMessage = result.message,
+                    verified = false
                 )
             }
         }
+
+        CommunicationHistoryTracker.recordEvent(
+            intentType = "FIND_CONTACT",
+            contactQuery = query,
+            selectedContact = if (result is ContactResolutionResult.SingleMatch) result.contact.name else "",
+            targetApp = "Contacts",
+            securityRiskLevel = "LOW",
+            actionName = "find_contact",
+            executionResult = toolResult.output,
+            isVerified = toolResult.verified,
+            evidence = toolResult.evidence ?: "",
+            errorDetails = toolResult.errorMessage
+        )
+
+        return toolResult
     }
 
     private fun initiatePhoneCall(target: String): ToolExecutionResult {
@@ -672,7 +721,8 @@ class ToolRouter(
                         tool = "telephony",
                         action = "make_phone_call",
                         output = "Multiple contacts found for '$target': $list. Please specify which number.",
-                        errorMessage = "Ambiguous contact"
+                        errorMessage = "Ambiguous contact",
+                        verified = false
                     )
                 }
                 is ContactResolutionResult.NoMatch -> {
@@ -681,85 +731,131 @@ class ToolRouter(
                         tool = "telephony",
                         action = "make_phone_call",
                         output = "No contact found with name '$target'.",
-                        errorMessage = "Contact not found"
+                        errorMessage = "Contact not found",
+                        verified = false
                     )
                 }
                 else -> {}
             }
         }
 
-        val hasCallPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+        val callResult = callManager.initiateCall(
+            phoneNumber = resolvedNumber.ifEmpty { target },
+            contactName = resolvedName
+        )
 
-        val intent = if (hasCallPerm && resolvedNumber.isNotEmpty()) {
-            Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(resolvedNumber)}"))
-        } else {
-            Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(resolvedNumber)}"))
-        }.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+        CommunicationHistoryTracker.recordEvent(
+            intentType = "MAKE_CALL",
+            contactQuery = target,
+            selectedContact = resolvedName,
+            targetApp = "Dialer / Phone",
+            securityRiskLevel = "HIGH",
+            actionName = "make_phone_call",
+            executionResult = callResult.message,
+            isVerified = callResult.success,
+            evidence = callResult.evidence ?: "",
+            errorDetails = if (!callResult.success) callResult.message else null
+        )
 
-        return try {
-            context.startActivity(intent)
-            ToolExecutionResult(
-                success = true,
-                tool = "telephony",
-                action = "make_phone_call",
-                output = "Calling $resolvedName ($resolvedNumber)...",
-                evidence = "Launched dialer/call intent for $resolvedNumber",
-                details = mapOf("contact" to resolvedName, "number" to resolvedNumber),
-                verified = true
-            )
-        } catch (e: Exception) {
-            ToolExecutionResult(
-                success = false,
-                tool = "telephony",
-                action = "make_phone_call",
-                output = "Failed to initiate call: ${e.localizedMessage}",
-                errorMessage = e.message
-            )
-        }
+        return ToolExecutionResult(
+            success = callResult.success,
+            tool = "telephony",
+            action = "make_phone_call",
+            output = callResult.message,
+            evidence = callResult.evidence,
+            details = mapOf("contact" to resolvedName, "callState" to callResult.callState.name),
+            verified = callResult.success
+        )
     }
 
-    private fun prepareOrSendSms(recipient: String, message: String): ToolExecutionResult {
+    private fun prepareSmsDraft(recipient: String, message: String): ToolExecutionResult {
         var resolvedNumber = recipient.filter { it.isDigit() || it == '+' }
+        var resolvedName = recipient
+
         if (resolvedNumber.length < 3 && ContactResolver.hasContactsPermission(context)) {
             val res = ContactResolver.searchContacts(context, recipient)
             if (res is ContactResolutionResult.SingleMatch) {
                 resolvedNumber = res.contact.phoneNumber
+                resolvedName = res.contact.name
             }
         }
 
-        val uri = Uri.parse("smsto:${Uri.encode(resolvedNumber)}")
-        val intent = Intent(Intent.ACTION_SENDTO, uri).apply {
-            putExtra("sms_body", message)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        val prepResult = smsManagerService.prepareSms(
+            recipientNumber = resolvedNumber.ifEmpty { recipient },
+            messageText = message,
+            contactName = resolvedName
+        )
+
+        CommunicationHistoryTracker.recordEvent(
+            intentType = "PREPARE_SMS",
+            contactQuery = recipient,
+            selectedContact = resolvedName,
+            targetApp = "SMS",
+            securityRiskLevel = "MEDIUM",
+            actionName = "prepare_sms",
+            executionResult = prepResult.message,
+            isVerified = prepResult.success,
+            evidence = prepResult.evidence ?: ""
+        )
+
+        return ToolExecutionResult(
+            success = prepResult.success,
+            tool = "sms",
+            action = "prepare_sms",
+            output = prepResult.message,
+            evidence = prepResult.evidence,
+            details = mapOf("recipient" to resolvedName, "status" to prepResult.status),
+            verified = prepResult.success
+        )
+    }
+
+    private fun prepareOrSendSms(recipient: String, message: String): ToolExecutionResult {
+        var resolvedNumber = recipient.filter { it.isDigit() || it == '+' }
+        var resolvedName = recipient
+
+        if (resolvedNumber.length < 3 && ContactResolver.hasContactsPermission(context)) {
+            val res = ContactResolver.searchContacts(context, recipient)
+            if (res is ContactResolutionResult.SingleMatch) {
+                resolvedNumber = res.contact.phoneNumber
+                resolvedName = res.contact.name
+            }
         }
 
-        return try {
-            context.startActivity(intent)
-            ToolExecutionResult(
-                success = true,
-                tool = "sms",
-                action = "send_sms",
-                output = "Prepared SMS to ${if (resolvedNumber.isNotEmpty()) resolvedNumber else recipient}: \"$message\"",
-                evidence = "Launched SMS composer with pre-filled recipient and body",
-                details = mapOf("recipient" to recipient, "message" to message),
-                verified = true
-            )
-        } catch (e: Exception) {
-            ToolExecutionResult(
-                success = false,
-                tool = "sms",
-                action = "send_sms",
-                output = "Could not open SMS app: ${e.localizedMessage}",
-                errorMessage = e.message
-            )
-        }
+        val sendResult = smsManagerService.sendSms(
+            recipientNumber = resolvedNumber.ifEmpty { recipient },
+            messageText = message,
+            contactName = resolvedName
+        )
+
+        CommunicationHistoryTracker.recordEvent(
+            intentType = "SEND_SMS",
+            contactQuery = recipient,
+            selectedContact = resolvedName,
+            targetApp = "SMS",
+            securityRiskLevel = "HIGH",
+            actionName = "send_sms",
+            executionResult = sendResult.message,
+            isVerified = sendResult.success,
+            evidence = sendResult.evidence ?: "",
+            errorDetails = if (!sendResult.success) sendResult.message else null
+        )
+
+        return ToolExecutionResult(
+            success = sendResult.success,
+            tool = "sms",
+            action = "send_sms",
+            output = sendResult.message,
+            evidence = sendResult.evidence,
+            details = mapOf("recipient" to resolvedName, "status" to sendResult.status),
+            verified = sendResult.success
+        )
     }
 
     // ==========================================
     // WhatsApp Integration Tools
     // ==========================================
 
-    private fun executeWhatsAppMessage(contactName: String, message: String): ToolExecutionResult {
+    private suspend fun executeWhatsAppMessage(contactName: String, message: String): ToolExecutionResult {
         var phoneNumber = contactName.filter { it.isDigit() || it == '+' }
         var displayName = contactName
 
@@ -777,7 +873,8 @@ class ToolRouter(
                         tool = "whatsapp",
                         action = "send_message",
                         output = "Multiple contacts found for '$contactName': $matchesStr. Please clarify.",
-                        errorMessage = "Multiple contact matches"
+                        errorMessage = "Multiple contact matches",
+                        verified = false
                     )
                 }
                 is ContactResolutionResult.NoMatch -> {}
@@ -785,76 +882,52 @@ class ToolRouter(
             }
         }
 
-        val cleanPhone = phoneNumber.filter { it.isDigit() }
-        val encodedMessage = try {
-            URLEncoder.encode(message, "UTF-8")
-        } catch (e: Exception) {
-            message
-        }
-
-        val intent = if (cleanPhone.isNotEmpty()) {
-            val waUri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanPhone&text=$encodedMessage")
-            Intent(Intent.ACTION_VIEW, waUri).apply {
-                setPackage("com.whatsapp")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
+        val actionResult = if (phoneNumber.length >= 7) {
+            whatsAppController.openChatDirect(phoneNumber, message)
         } else {
-            Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                setPackage("com.whatsapp")
-                putExtra(Intent.EXTRA_TEXT, message)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
+            // Open WhatsApp and search contact
+            whatsAppController.openWhatsApp()
+            whatsAppController.searchAndOpenContact(displayName)
         }
 
-        return try {
-            val pm = context.packageManager
-            val isWhatsAppInstalled = try {
-                pm.getPackageInfo("com.whatsapp", 0) != null
-            } catch (e: Exception) {
-                false
-            }
+        CommunicationHistoryTracker.recordEvent(
+            intentType = "SEND_WHATSAPP_MESSAGE",
+            contactQuery = contactName,
+            selectedContact = displayName,
+            targetApp = "WhatsApp",
+            securityRiskLevel = "HIGH",
+            actionName = "send_whatsapp_message",
+            executionResult = actionResult.message,
+            isVerified = actionResult.isVerified,
+            evidence = actionResult.evidence ?: "",
+            errorDetails = if (!actionResult.success) actionResult.message else null
+        )
 
-            if (!isWhatsAppInstalled) {
-                val webUri = Uri.parse("https://api.whatsapp.com/send?text=$encodedMessage")
-                val webIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(webIntent)
-                return ToolExecutionResult(
-                    success = true,
-                    tool = "whatsapp",
-                    action = "send_message",
-                    output = "WhatsApp app is not installed. Opened web WhatsApp with message: \"$message\"",
-                    evidence = "Launched web fallback URL",
-                    details = mapOf("recipient" to displayName, "message" to message),
-                    verified = true
-                )
-            }
-
-            context.startActivity(intent)
-            ToolExecutionResult(
-                success = true,
-                tool = "whatsapp",
-                action = "send_message",
-                output = "Opened WhatsApp to message $displayName: \"$message\"",
-                evidence = "Launched WhatsApp chat intent for $displayName",
-                details = mapOf("recipient" to displayName, "message" to message),
-                verified = true
-            )
-        } catch (e: Exception) {
-            ToolExecutionResult(
-                success = false,
-                tool = "whatsapp",
-                action = "send_message",
-                output = "Failed to launch WhatsApp: ${e.localizedMessage}",
-                errorMessage = e.message
-            )
-        }
+        return ToolExecutionResult(
+            success = actionResult.success,
+            tool = "whatsapp",
+            action = "send_message",
+            output = actionResult.message,
+            evidence = actionResult.evidence,
+            details = mapOf("recipient" to displayName, "message" to message),
+            verified = actionResult.isVerified
+        )
     }
 
-    private fun openWhatsAppConversation(contactName: String): ToolExecutionResult {
+    private suspend fun openWhatsAppConversation(contactName: String): ToolExecutionResult {
         return executeWhatsAppMessage(contactName, "")
+    }
+
+    private suspend fun verifyWhatsAppMessage(message: String): ToolExecutionResult {
+        val verifyRes = whatsAppController.verifyMessageInConversation(message)
+        return ToolExecutionResult(
+            success = verifyRes.success,
+            tool = "whatsapp",
+            action = "verify_message",
+            output = verifyRes.message,
+            evidence = verifyRes.evidence,
+            verified = verifyRes.isVerified
+        )
     }
 
     // ==========================================

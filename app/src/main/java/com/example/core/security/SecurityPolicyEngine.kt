@@ -36,6 +36,8 @@ object SecurityPolicyEngine {
         "inject touch"
     )
 
+    fun validateInput(input: String): SecurityScanResult = scanPrompt(input)
+
     /**
      * Evaluates incoming text against prompt injection and malicious instructions.
      */
@@ -95,12 +97,15 @@ object SecurityPolicyEngine {
             "open_app", "close_app", "press_back", "press_home", "read_screen", "find_text",
             "scroll", "get_current_app", "get_device_status", "query_battery_status",
             "toggle_flashlight", "clipboard_copy", "security_audit_check", "get_contacts",
-            "open_settings", "open_whatsapp_chat", "take_screenshot", "read_notifications" -> SkillRiskLevel.LOW
+            "find_contact", "open_contact", "open_settings", "open_whatsapp_chat", "take_screenshot",
+            "read_notifications", "verify_message_sent", "get_call_state" -> SkillRiskLevel.LOW
 
-            "make_phone_call", "make_call", "send_sms", "send_message", "send_whatsapp_message",
+            "prepare_message", "prepare_sms", "prepare_whatsapp_message",
             "tap", "long_press", "swipe", "type_text", "search_web" -> SkillRiskLevel.MEDIUM
 
-            "delete_memory", "clear_database", "install_app" -> SkillRiskLevel.HIGH
+            "make_phone_call", "make_call", "initiate_call", "send_sms", "send_message",
+            "send_whatsapp_message", "delete_memory", "clear_database", "install_app" -> SkillRiskLevel.HIGH
+
             "modify_security_policy", "credential_operation", "system_wipe" -> SkillRiskLevel.CRITICAL
             else -> SkillRiskLevel.MEDIUM
         }

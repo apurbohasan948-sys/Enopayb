@@ -49,3 +49,11 @@ fun MyApplicationTheme(
         content = content
     )
 }
+
+@Composable
+fun JarvisTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = false,
+    content: @Composable () -> Unit
+) = MyApplicationTheme(darkTheme, dynamicColor, content)
+

@@ -115,6 +115,20 @@ fun ModelsScreen(
     val savedPrompt by viewModel.customSystemPrompt.collectAsState()
     val testStatus by viewModel.apiTestStatus.collectAsState()
 
+    // Phase 9 States
+    val routingStats by viewModel.performanceMonitor.stats.collectAsState()
+    val perfMetrics by viewModel.performanceMonitor.metrics.collectAsState()
+    val modelProfile by viewModel.modelProfileManager.currentProfile.collectAsState()
+    val hardwareReport by viewModel.modelProfileManager.hardwareReport.collectAsState()
+    val modelStatus by viewModel.modelLifecycleManager.status.collectAsState()
+    val cloudPolicy by viewModel.cloudUsagePolicy.policy.collectAsState()
+
+    var showBackupDialog by remember { mutableStateOf(false) }
+    var backupJsonContent by remember { mutableStateOf("") }
+    var importJsonInput by remember { mutableStateOf("") }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
     var inputApiKey by remember(savedApiKey) { mutableStateOf(savedApiKey) }
     var selectedModel by remember(savedModel) { mutableStateOf(savedModel) }
     var tempValue by remember(savedTemp) { mutableFloatStateOf(savedTemp) }
@@ -619,6 +633,402 @@ fun ModelsScreen(
                     }
                 }
                 else -> {}
+            }
+        }
+
+        // === PHASE 9: LOCAL BRAIN ROUTING & TELEMETRY ===
+        HologramCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "LOCAL BRAIN ROUTING TELEMETRY",
+                    color = JarvisCyan,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                StatusPill(
+                    label = "${routingStats.localExecutionPercentage.toInt()}% LOCAL",
+                    icon = Icons.Default.CheckCircle,
+                    color = if (routingStats.localExecutionPercentage >= 70f) JarvisEmerald else JarvisAmber
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = JarvisDarkNavy,
+                    border = BorderStroke(0.5.dp, JarvisBorder),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("TOTAL TASKS", color = JarvisTextSecondary, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                        Text("${routingStats.totalTasks}", color = JarvisTextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = JarvisDarkNavy,
+                    border = BorderStroke(0.5.dp, JarvisBorder),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("NO-AI FAST", color = JarvisCyan, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                        Text("${routingStats.noAiTasks}", color = JarvisCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = JarvisDarkNavy,
+                    border = BorderStroke(0.5.dp, JarvisBorder),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("LOCAL BRAIN", color = JarvisEmerald, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                        Text("${routingStats.localTasks}", color = JarvisEmerald, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = JarvisDarkNavy,
+                    border = BorderStroke(0.5.dp, JarvisBorder),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("GEMINI CLOUD", color = JarvisAmber, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                        Text("${routingStats.geminiTasks}", color = JarvisAmber, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            InfoMetricRow(label = "Local Execution Ratio", value = "${routingStats.localExecutionPercentage.toInt()}%")
+            InfoMetricRow(label = "Gemini Cloud Fallback", value = "${routingStats.geminiFallbackPercentage.toInt()}%")
+            InfoMetricRow(label = "Avg Local Latency", value = "${routingStats.averageLocalLatencyMs} ms")
+            InfoMetricRow(label = "Avg Gemini Latency", value = "${routingStats.averageGeminiLatencyMs} ms")
+            InfoMetricRow(label = "Current RAM In-Use", value = "${perfMetrics.currentRamUsedMb} MB / ${perfMetrics.currentRamAvailMb} MB")
+            InfoMetricRow(label = "Last Screen Observation", value = "${perfMetrics.lastScreenObservationMs} ms")
+        }
+
+        // === PHASE 9: MODEL SIZE PROFILE & HARDWARE SPEC ===
+        HologramCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "HARDWARE-AWARE MODEL PROFILES",
+                    color = JarvisTextPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Icon(Icons.Default.Tune, contentDescription = null, tint = JarvisViolet, modifier = Modifier.size(18.dp))
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Detected Device: ${hardwareReport.detectedDeviceName} • RAM: ${hardwareReport.totalPhysicalRamMb} MB (Free: ${hardwareReport.availableRamMb} MB)",
+                color = JarvisTextSecondary,
+                fontSize = 11.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            com.example.core.model.ModelSizeProfile.values().forEach { profile ->
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (modelProfile == profile) JarvisCyan.copy(alpha = 0.12f) else JarvisDarkNavy,
+                    border = BorderStroke(1.dp, if (modelProfile == profile) JarvisCyan else JarvisBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp)
+                        .clickable { viewModel.setModelProfile(profile) }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = modelProfile == profile,
+                            onClick = { viewModel.setModelProfile(profile) },
+                            colors = RadioButtonDefaults.colors(selectedColor = JarvisCyan, unselectedColor = JarvisBorder)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column {
+                            Text(
+                                text = "${profile.title} (${profile.parameterCount})",
+                                color = if (modelProfile == profile) JarvisCyan else JarvisTextPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = "${profile.modelName} • Quant: ${profile.quantization} • Target: ${profile.minRamRecommendedGb}GB+ RAM",
+                                color = JarvisTextSecondary,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // === PHASE 9: MODEL LIFECYCLE & RAM MANAGEMENT ===
+        HologramCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "MODEL LIFECYCLE & RAM CONTROL",
+                    color = JarvisTextPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                StatusPill(
+                    label = modelStatus.state.name,
+                    icon = Icons.Default.Memory,
+                    color = if (modelStatus.state == com.example.core.model.ModelLifecycleState.READY || modelStatus.state == com.example.core.model.ModelLifecycleState.IDLE) JarvisEmerald else JarvisAmber
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            InfoMetricRow(label = "Active Model in RAM", value = modelStatus.activeModelName)
+            InfoMetricRow(label = "Current Model RAM", value = "${modelStatus.estimatedRamUsageMb} MB")
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.unloadModelMemory() },
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisRed.copy(alpha = 0.2f)),
+                    border = BorderStroke(1.dp, JarvisRed),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Unload (Free RAM)", color = JarvisRed, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+                Button(
+                    onClick = { viewModel.reloadModelMemory() },
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisCyan.copy(alpha = 0.2f)),
+                    border = BorderStroke(1.dp, JarvisCyan),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Preload Model", color = JarvisCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+
+        // === PHASE 9: CLOUD USAGE POLICY & BUDGET ===
+        HologramCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "CLOUD USAGE & BUDGET POLICY",
+                    color = JarvisTextPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Icon(Icons.Default.NetworkCheck, contentDescription = null, tint = JarvisCyan, modifier = Modifier.size(18.dp))
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            InfoMetricRow(label = "Gemini Cloud Allowed", value = if (cloudPolicy.isGeminiEnabled) "YES" else "DISABLED")
+            InfoMetricRow(label = "Network Egress Rule", value = if (cloudPolicy.isWifiOnly) "Wi-Fi Only" else "Any Network")
+            InfoMetricRow(label = "Daily Cloud Request Quota", value = "${cloudPolicy.requestsUsedToday} / ${cloudPolicy.dailyRequestLimit}")
+            InfoMetricRow(label = "Cloud Vision Permitted", value = if (cloudPolicy.isVisionAllowed) "ALLOWED" else "LOCAL ONLY")
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = cloudPolicy.isWifiOnly,
+                    onClick = {
+                        viewModel.setCloudUsagePolicy(
+                            cloudPolicy.isGeminiEnabled,
+                            !cloudPolicy.isWifiOnly,
+                            cloudPolicy.dailyRequestLimit,
+                            cloudPolicy.isVisionAllowed
+                        )
+                    },
+                    label = { Text("Wi-Fi Only", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = JarvisCyan.copy(alpha = 0.2f), selectedLabelColor = JarvisCyan)
+                )
+                FilterChip(
+                    selected = cloudPolicy.isVisionAllowed,
+                    onClick = {
+                        viewModel.setCloudUsagePolicy(
+                            cloudPolicy.isGeminiEnabled,
+                            cloudPolicy.isWifiOnly,
+                            cloudPolicy.dailyRequestLimit,
+                            !cloudPolicy.isVisionAllowed
+                        )
+                    },
+                    label = { Text("Cloud Vision", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = JarvisCyan.copy(alpha = 0.2f), selectedLabelColor = JarvisCyan)
+                )
+                FilterChip(
+                    selected = cloudPolicy.isGeminiEnabled,
+                    onClick = {
+                        viewModel.setCloudUsagePolicy(
+                            !cloudPolicy.isGeminiEnabled,
+                            cloudPolicy.isWifiOnly,
+                            cloudPolicy.dailyRequestLimit,
+                            cloudPolicy.isVisionAllowed
+                        )
+                    },
+                    label = { Text("Gemini Cloud", fontSize = 10.sp) },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = JarvisCyan.copy(alpha = 0.2f), selectedLabelColor = JarvisCyan)
+                )
+            }
+        }
+
+        // === PHASE 9: BRAIN PERSISTENCE, BACKUP & MAINTENANCE ===
+        HologramCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "BRAIN BACKUP & MAINTENANCE",
+                    color = JarvisTextPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Icon(Icons.Default.Save, contentDescription = null, tint = JarvisEmerald, modifier = Modifier.size(18.dp))
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Backup memories, verified skills, and knowledge chunks to standard JSON or run maintenance engines.",
+                color = JarvisTextSecondary,
+                fontSize = 11.sp
+            )
+
+            statusMessage?.let { msg ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = JarvisEmerald.copy(alpha = 0.15f),
+                    border = BorderStroke(0.8.dp, JarvisEmerald),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = msg,
+                        color = JarvisEmerald,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        viewModel.exportBrainSnapshot { json ->
+                            backupJsonContent = json
+                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(json))
+                            statusMessage = "Brain Snapshot exported (${json.length} chars) & copied to clipboard!"
+                            Toast.makeText(context, "Brain copied to clipboard!", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisCyan.copy(alpha = 0.2f)),
+                    border = BorderStroke(1.dp, JarvisCyan),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Export Brain", color = JarvisCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+                Button(
+                    onClick = {
+                        showImportDialog = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisViolet.copy(alpha = 0.2f)),
+                    border = BorderStroke(1.dp, JarvisViolet),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Import Brain", color = JarvisViolet, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        viewModel.runMemoryCompaction { report ->
+                            statusMessage = "Compaction Complete: Merged ${report.duplicatesRemoved} duplicates, updated ${report.entriesUpdated} records."
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisAmber.copy(alpha = 0.2f)),
+                    border = BorderStroke(1.dp, JarvisAmber),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Compact Memory", color = JarvisAmber, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+                Button(
+                    onClick = {
+                        viewModel.runSkillOptimization { report ->
+                            statusMessage = "Skill Optimizer: ${report.prioritizedSkillsCount} prioritized, ${report.dormantSkillsCount} marked dormant."
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisEmerald.copy(alpha = 0.2f)),
+                    border = BorderStroke(1.dp, JarvisEmerald),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Optimize Skills", color = JarvisEmerald, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+
+            if (showImportDialog) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = importJsonInput,
+                    onValueChange = { importJsonInput = it },
+                    label = { Text("Paste Brain Snapshot JSON") },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 4,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = JarvisViolet,
+                        unfocusedBorderColor = JarvisBorder,
+                        focusedTextColor = JarvisTextPrimary,
+                        unfocusedTextColor = JarvisTextPrimary
+                    )
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Button(
+                        onClick = { showImportDialog = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)
+                    ) {
+                        Text("Cancel", color = JarvisTextSecondary)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (importJsonInput.isNotBlank()) {
+                                viewModel.importBrainSnapshot(importJsonInput) { res ->
+                                    statusMessage = if (res.success) {
+                                        "Imported: ${res.memoriesCount} memories, ${res.skillsCount} skills, ${res.knowledgeCount} chunks."
+                                    } else {
+                                        "Import failed: ${res.message}"
+                                    }
+                                    showImportDialog = false
+                                    importJsonInput = ""
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = JarvisViolet)
+                    ) {
+                        Text("Restore Brain", color = Color.White)
+                    }
+                }
             }
         }
 

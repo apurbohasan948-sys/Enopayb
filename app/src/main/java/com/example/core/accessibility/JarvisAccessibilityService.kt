@@ -233,8 +233,90 @@ class JarvisAccessibilityService : AccessibilityService() {
         }
 
         // ==========================================
-        // PHASE B: Real observeScreen()
+        // Explicit Core Accessibility Operations
         // ==========================================
+
+        fun getActiveWindow(): AccessibilityNodeInfo? {
+            return instance?.rootInActiveWindow
+        }
+
+        fun getVisibleNodes(): List<ObservedNode> {
+            return observeScreen()?.elements ?: emptyList()
+        }
+
+        fun findText(query: String): List<AccessibilityNodeInfo> {
+            val root = instance?.rootInActiveWindow ?: return emptyList()
+            if (query.isBlank()) return emptyList()
+            return root.findAccessibilityNodeInfosByText(query) ?: emptyList()
+        }
+
+        fun findContentDescription(query: String): List<AccessibilityNodeInfo> {
+            val root = instance?.rootInActiveWindow ?: return emptyList()
+            if (query.isBlank()) return emptyList()
+            val results = mutableListOf<AccessibilityNodeInfo>()
+            val trimmed = query.trim().lowercase()
+
+            fun traverse(node: AccessibilityNodeInfo?) {
+                if (node == null) return
+                val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
+                if (desc.contains(trimmed)) {
+                    results.add(node)
+                }
+                for (i in 0 until node.childCount) {
+                    traverse(node.getChild(i))
+                }
+            }
+            traverse(root)
+            return results
+        }
+
+        fun findClickableNode(query: String): AccessibilityNodeInfo? {
+            val (node, _) = findElement(query)
+            if (node != null && node.isClickable) return node
+            val descMatches = findContentDescription(query)
+            val clickableDesc = descMatches.firstOrNull { it.isClickable }
+            if (clickableDesc != null) return clickableDesc
+            val textMatches = findText(query)
+            return textMatches.firstOrNull { it.isClickable }
+        }
+
+        fun clickNode(node: AccessibilityNodeInfo): Boolean {
+            if (node.isClickable) {
+                return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
+            var parent = node.parent
+            var depth = 0
+            while (parent != null && depth < 6) {
+                if (parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    return true
+                }
+                parent = parent.parent
+                depth++
+            }
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (!rect.isEmpty) {
+                return performSwipeGesture(rect.centerX().toFloat(), rect.centerY().toFloat(), rect.centerX().toFloat(), rect.centerY().toFloat(), 50)
+            }
+            return false
+        }
+
+        fun setText(node: AccessibilityNodeInfo, text: String): Boolean {
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            val arguments = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+        }
+
+        fun scroll(forward: Boolean = true): Boolean {
+            val res = scrollScreen(forward)
+            return res.success
+        }
+
+        fun goBack(): Boolean {
+            return pressBack()
+        }
 
         fun observeScreen(): ObservedScreen? {
             val service = instance ?: return null

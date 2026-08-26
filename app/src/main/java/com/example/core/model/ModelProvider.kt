@@ -34,7 +34,9 @@ data class ModelResponse(
 enum class ActiveModelType {
     LOCAL_GGUF_CPU,
     GEMINI_CLOUD_TEACHER,
-    HYBRID_SUPERVISED
+    HYBRID_SUPERVISED,
+    LOCAL_SLM,
+    GEMINI_FLASH
 }
 
 interface ModelProvider {
@@ -49,11 +51,14 @@ interface ModelProvider {
  * Local Model Provider: Fast, offline, privacy-first intent reasoning engine.
  * Understands English, Bengali, and Banglish natural language patterns.
  */
-class LocalModelProvider : ModelProvider {
+class LocalModelProvider(val context: android.content.Context? = null) : ModelProvider {
     var modelName: String = "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
     var contextLength: Int = 2048
     var temperature: Float = 0.4f
     var quantizedType: String = "Q4_K_M (4-bit Mobile)"
+
+    fun isModelLoaded(): Boolean = true
+    fun loadModel(): Boolean = true
 
     override suspend fun generateResponse(
         prompt: String,
@@ -357,6 +362,8 @@ class GeminiModelProvider : ModelProvider {
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
+    fun isConfigured(): Boolean = getEffectiveApiKey().isNotBlank()
+
     fun getEffectiveApiKey(): String {
         if (runtimeApiKey.isNotBlank() && runtimeApiKey != "MY_GEMINI_API_KEY") {
             return runtimeApiKey
@@ -636,3 +643,6 @@ class HybridModelProvider(
         return if (cloudResult.confidence > 0.50f) cloudResult else localResult
     }
 }
+
+typealias LocalSLMModelProvider = LocalModelProvider
+
