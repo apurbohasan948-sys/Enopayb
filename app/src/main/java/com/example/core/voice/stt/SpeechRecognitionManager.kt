@@ -1,7 +1,9 @@
 package com.example.core.voice.stt
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -9,6 +11,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,17 +51,37 @@ class SpeechRecognitionManager(private val context: Context) {
 
     private var isListeningActive = false
 
-    init {
-        mainHandler.post {
-            ensureRecognizer()
+    // No eager initialization in init - recognizer is initialized only on demand after permission check
+
+    private fun hasAudioPermission(): Boolean {
+        return try {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        } catch (e: Throwable) {
+            Log.w("SpeechRecognitionManager", "Permission check failed: ${e.message}")
+            false
         }
     }
 
-    private fun ensureRecognizer() {
-        if (speechRecognizer == null && SpeechRecognizer.isRecognitionAvailable(context)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                setRecognitionListener(createListener())
+    fun ensureRecognizer(): Boolean {
+        if (!hasAudioPermission()) {
+            Log.w("SpeechRecognitionManager", "RECORD_AUDIO permission not granted; speech recognizer remains uninitialized")
+            return false
+        }
+        try {
+            if (speechRecognizer == null && SpeechRecognizer.isRecognitionAvailable(context)) {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                    setRecognitionListener(createListener())
+                }
             }
+            return speechRecognizer != null
+        } catch (e: Throwable) {
+            Log.w("SpeechRecognitionManager", "createSpeechRecognizer failed: ${e.message}")
+            speechRecognizer = null
+            _sttState.value = STTState.ERROR
+            return false
         }
     }
 
@@ -95,8 +118,12 @@ class SpeechRecognitionManager(private val context: Context) {
 
                 if (isContinuous) {
                     mainHandler.postDelayed({
-                        if (isContinuous && !isListeningActive) {
-                            startListeningInternal()
+                        try {
+                            if (isContinuous && !isListeningActive) {
+                                startListeningInternal()
+                            }
+                        } catch (e: Throwable) {
+                            Log.w("SpeechRecognitionManager", "Continuous retry error: ${e.message}")
                         }
                     }, 1000)
                 }
@@ -117,8 +144,12 @@ class SpeechRecognitionManager(private val context: Context) {
 
                 if (isContinuous) {
                     mainHandler.postDelayed({
-                        if (isContinuous && !isListeningActive) {
-                            startListeningInternal()
+                        try {
+                            if (isContinuous && !isListeningActive) {
+                                startListeningInternal()
+                            }
+                        } catch (e: Throwable) {
+                            Log.w("SpeechRecognitionManager", "Continuous retry error: ${e.message}")
                         }
                     }, 600)
                 }
@@ -151,18 +182,35 @@ class SpeechRecognitionManager(private val context: Context) {
         this.onErrorCallback = onError
 
         mainHandler.post {
-            startListeningInternal()
+            try {
+                startListeningInternal()
+            } catch (e: Throwable) {
+                Log.w("SpeechRecognitionManager", "startListening error: ${e.message}")
+                _sttState.value = STTState.ERROR
+                onError?.invoke(-2, e.localizedMessage ?: "Unknown speech error")
+            }
         }
     }
 
     private fun startListeningInternal() {
+        if (!hasAudioPermission()) {
+            _sttState.value = STTState.ERROR
+            onErrorCallback?.invoke(SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS, "RECORD_AUDIO permission not granted")
+            return
+        }
+
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             _sttState.value = STTState.ERROR
             onErrorCallback?.invoke(-1, "Speech recognition not available on device")
             return
         }
 
-        ensureRecognizer()
+        val initialized = ensureRecognizer()
+        if (!initialized || speechRecognizer == null) {
+            _sttState.value = STTState.ERROR
+            onErrorCallback?.invoke(-2, "Speech recognizer initialization failed")
+            return
+        }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -188,7 +236,7 @@ class SpeechRecognitionManager(private val context: Context) {
             speechRecognizer?.cancel()
             speechRecognizer?.startListening(intent)
             isListeningActive = true
-            _sttState.value = STTState.PREPARING
+            _sttState.value = STTState.LISTENING
         } catch (e: Exception) {
             Log.e("SpeechRecognitionManager", "Failed to start speech recognizer", e)
             _sttState.value = STTState.ERROR
@@ -227,7 +275,11 @@ class SpeechRecognitionManager(private val context: Context) {
     fun shutdown() {
         cancel()
         mainHandler.post {
-            speechRecognizer?.destroy()
+            try {
+                speechRecognizer?.destroy()
+            } catch (e: Exception) {
+                Log.w("SpeechRecognitionManager", "Error destroying recognizer: ${e.message}")
+            }
             speechRecognizer = null
         }
     }

@@ -39,8 +39,8 @@ data class SystemHealthReport(
 class JarvisHealthMonitor(
     private val context: Context,
     private val dao: JarvisDao,
-    private val geminiProvider: GeminiModelProvider,
-    private val localSLMProvider: LocalSLMModelProvider,
+    private val geminiProvider: GeminiModelProvider? = null,
+    private val localSLMProvider: LocalSLMModelProvider? = null,
     private val networkMonitor: NetworkStateMonitor,
     private val resourceManager: ResourceManager,
     val recoveryManager: SafeRecoveryManager = SafeRecoveryManager(context, dao, geminiProvider, localSLMProvider)
@@ -62,8 +62,8 @@ class JarvisHealthMonitor(
         val micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val overlayGranted = Settings.canDrawOverlays(context)
 
-        val geminiReady = geminiProvider.isConfigured()
-        val localReady = localSLMProvider.isModelLoaded()
+        val geminiReady = geminiProvider?.isConfigured() ?: false
+        val localReady = localSLMProvider?.isModelLoaded() ?: false
 
         var dbStatus = "HEALTHY"
         try {

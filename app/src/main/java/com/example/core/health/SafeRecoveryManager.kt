@@ -20,8 +20,8 @@ data class RecoveryResult(
 class SafeRecoveryManager(
     private val context: Context,
     private val dao: JarvisDao,
-    private val geminiProvider: GeminiModelProvider,
-    private val localSLMProvider: LocalSLMModelProvider
+    private val geminiProvider: GeminiModelProvider? = null,
+    private val localSLMProvider: LocalSLMModelProvider? = null
 ) {
 
     /**
@@ -32,12 +32,12 @@ class SafeRecoveryManager(
             "GEMINI_MODEL", "GEMINI" -> {
                 try {
                     // Reinitialize Gemini configuration
-                    val reloaded = geminiProvider.isConfigured()
+                    val reloaded = geminiProvider?.isConfigured() ?: false
                     RecoveryResult(
                         component = "GEMINI_MODEL",
                         isSuccess = reloaded,
                         actionTaken = "Reloaded API client credentials and tested connection state",
-                        details = if (reloaded) "Gemini client reinitialized successfully" else "API key missing or invalid in preferences"
+                        details = if (reloaded) "Gemini client reinitialized successfully" else "API key missing or unconfigured"
                     )
                 } catch (e: Exception) {
                     RecoveryResult("GEMINI_MODEL", false, "Failed to reload Gemini client", e.localizedMessage ?: "Unknown error")
@@ -46,7 +46,7 @@ class SafeRecoveryManager(
 
             "LOCAL_SLM", "SLM" -> {
                 try {
-                    val loaded = localSLMProvider.loadModel()
+                    val loaded = localSLMProvider?.loadModel() ?: false
                     RecoveryResult(
                         component = "LOCAL_SLM",
                         isSuccess = loaded,

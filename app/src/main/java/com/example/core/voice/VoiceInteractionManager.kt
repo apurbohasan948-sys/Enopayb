@@ -137,6 +137,17 @@ class VoiceInteractionManager(
         ttsManager.speechRate = rate
     }
 
+    fun onAudioPermissionGranted() {
+        try {
+            sttManager.ensureRecognizer()
+            if (wakeManager.isWakeWordEnabled.value && !_isMicrophoneMuted.value) {
+                wakeManager.startMonitoring()
+            }
+        } catch (e: Throwable) {
+            Log.w("VoiceInteractionManager", "Error handling audio permission: ${e.message}")
+        }
+    }
+
     fun setSpeechPitch(pitch: Float) {
         ttsManager.speechPitch = pitch
     }

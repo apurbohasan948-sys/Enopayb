@@ -77,11 +77,7 @@ class WakeWordManager(
         )
     }
 
-    init {
-        mainHandler.post {
-            ensureKeywordSpotter()
-        }
-    }
+    // No eager initialization in init - components are started only after RECORD_AUDIO permission
 
     fun setWakeWordEnabled(enabled: Boolean) {
         _isWakeWordEnabled.value = enabled
@@ -225,44 +221,74 @@ class WakeWordManager(
         }
     }
 
-    private fun ensureKeywordSpotter() {
-        if (keywordSpotter == null && SpeechRecognizer.isRecognitionAvailable(context)) {
-            keywordSpotter = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: android.os.Bundle?) {}
-                    override fun onBeginningOfSpeech() {}
-                    override fun onRmsChanged(rmsdB: Float) {}
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-                    override fun onEndOfSpeech() {}
-                    override fun onError(error: Int) {
-                        // Spotter handles errors silently
-                    }
+    private fun hasAudioPermission(): Boolean {
+        return try {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        } catch (e: Throwable) {
+            Log.w("WakeWordManager", "Permission check failed: ${e.message}")
+            false
+        }
+    }
 
-                    override fun onResults(results: android.os.Bundle?) {
-                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        matches?.forEach { candidate ->
-                            val lower = candidate.lowercase().trim()
-                            if (WAKE_KEYWORDS.any { lower.contains(it) }) {
-                                triggerWakeWord()
-                                return@forEach
+    private fun ensureKeywordSpotter(): Boolean {
+        if (!hasAudioPermission()) {
+            return false
+        }
+        try {
+            if (keywordSpotter == null && SpeechRecognizer.isRecognitionAvailable(context)) {
+                keywordSpotter = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                    setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: android.os.Bundle?) {}
+                        override fun onBeginningOfSpeech() {}
+                        override fun onRmsChanged(rmsdB: Float) {}
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+                        override fun onEndOfSpeech() {}
+                        override fun onError(error: Int) {
+                            // Spotter handles errors silently
+                        }
+
+                        override fun onResults(results: android.os.Bundle?) {
+                            try {
+                                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                matches?.forEach { candidate ->
+                                    val lower = candidate.lowercase().trim()
+                                    if (WAKE_KEYWORDS.any { lower.contains(it) }) {
+                                        triggerWakeWord()
+                                        return@forEach
+                                    }
+                                }
+                            } catch (e: Throwable) {
+                                Log.w("WakeWordManager", "Spotter result error: ${e.message}")
                             }
                         }
-                    }
 
-                    override fun onPartialResults(partialResults: android.os.Bundle?) {
-                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        matches?.forEach { candidate ->
-                            val lower = candidate.lowercase().trim()
-                            if (WAKE_KEYWORDS.any { lower.contains(it) }) {
-                                triggerWakeWord()
-                                return@forEach
+                        override fun onPartialResults(partialResults: android.os.Bundle?) {
+                            try {
+                                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                matches?.forEach { candidate ->
+                                    val lower = candidate.lowercase().trim()
+                                    if (WAKE_KEYWORDS.any { lower.contains(it) }) {
+                                        triggerWakeWord()
+                                        return@forEach
+                                    }
+                                }
+                            } catch (e: Throwable) {
+                                Log.w("WakeWordManager", "Spotter partial result error: ${e.message}")
                             }
                         }
-                    }
 
-                    override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
-                })
+                        override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+                    })
+                }
             }
+            return keywordSpotter != null
+        } catch (e: Throwable) {
+            Log.w("WakeWordManager", "createSpeechRecognizer spotter failed: ${e.message}")
+            keywordSpotter = null
+            return false
         }
     }
 
@@ -271,19 +297,19 @@ class WakeWordManager(
         if (now - lastTriggerTimestamp < cooldownMillis) return
 
         mainHandler.post {
-            if (keywordSpotter != null && _isMonitoring.value) {
-                val spotterIntent = android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
-                }
-                try {
+            try {
+                if (ensureKeywordSpotter() && keywordSpotter != null && _isMonitoring.value) {
+                    val spotterIntent = android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+                    }
                     keywordSpotter?.startListening(spotterIntent)
-                } catch (e: Exception) {
-                    // Ignore transient spotter busy state
                 }
+            } catch (e: Exception) {
+                Log.w("WakeWordManager", "checkWakeWordSpotter error: ${e.message}")
             }
         }
     }
@@ -294,14 +320,22 @@ class WakeWordManager(
         lastTriggerTimestamp = now
 
         mainHandler.post {
-            onWakeWordTriggered?.invoke()
+            try {
+                onWakeWordTriggered?.invoke()
+            } catch (e: Throwable) {
+                Log.w("WakeWordManager", "onWakeWordTriggered callback error: ${e.message}")
+            }
         }
     }
 
     fun shutdown() {
         stopMonitoring()
         mainHandler.post {
-            keywordSpotter?.destroy()
+            try {
+                keywordSpotter?.destroy()
+            } catch (e: Throwable) {
+                Log.w("WakeWordManager", "destroy keywordSpotter error: ${e.message}")
+            }
             keywordSpotter = null
         }
     }

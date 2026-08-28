@@ -34,8 +34,8 @@ class AutonomousAgentManager(
     val dao: JarvisDao,
     val capabilityManager: CapabilityManager,
     val securityPolicyEngine: SecurityPolicyEngine,
-    val geminiProvider: GeminiModelProvider,
-    val localSLMProvider: LocalSLMModelProvider,
+    val geminiProvider: GeminiModelProvider? = null,
+    val localSLMProvider: LocalSLMModelProvider? = null,
     private val agentCoreProvider: () -> JarvisAgentCore?,
     val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Main)
 ) {

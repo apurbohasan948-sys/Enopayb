@@ -129,6 +129,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val voiceManager = VoiceManager(application)
     val capabilityManager = com.example.core.capability.CapabilityManager(application)
 
+    val localProvider = LocalModelProvider()
+    val geminiProvider = GeminiModelProvider()
+    val hybridProvider = HybridModelProvider(localProvider, geminiProvider)
+
     val localVisionProvider = LocalVisionProvider()
     val geminiVisionProvider = GeminiVisionProvider()
     val hybridVisionProvider = HybridVisionProvider(localVisionProvider, geminiVisionProvider, repository)
@@ -140,19 +144,6 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     // Phase 8 & 9 autonomous dependencies
     val localSLMProvider = LocalSLMModelProvider(application)
-    val autonomousAgentManager: AutonomousAgentManager by lazy {
-        AutonomousAgentManager(
-            context = application,
-            dao = database.jarvisDao(),
-            capabilityManager = capabilityManager,
-            securityPolicyEngine = SecurityPolicyEngine,
-            geminiProvider = geminiProvider,
-            localSLMProvider = localSLMProvider,
-            agentCoreProvider = { jarvisAgentCore },
-            coroutineScope = viewModelScope
-        )
-    }
-
     val offlineManager = com.example.core.model.OfflineManager(
         application,
         com.example.core.health.NetworkStateMonitor(application)
@@ -185,12 +176,19 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         modelRouter = modelRouter
     )
 
+    val autonomousAgentManager = AutonomousAgentManager(
+        context = application,
+        dao = database.jarvisDao(),
+        capabilityManager = capabilityManager,
+        securityPolicyEngine = SecurityPolicyEngine,
+        geminiProvider = geminiProvider,
+        localSLMProvider = localSLMProvider,
+        agentCoreProvider = { jarvisAgentCore },
+        coroutineScope = viewModelScope
+    )
+
     private val _capabilitiesList = MutableStateFlow(capabilityManager.getAllCapabilities())
     val capabilitiesList: StateFlow<List<com.example.core.capability.CapabilityItem>> = _capabilitiesList.asStateFlow()
-
-    private val localProvider = LocalModelProvider()
-    private val geminiProvider = GeminiModelProvider()
-    private val hybridProvider = HybridModelProvider(localProvider, geminiProvider)
 
     // Data Streams from Room
     val chatMessages: StateFlow<List<ChatMessageEntity>> = repository.chatMessages
@@ -448,6 +446,14 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     fun reloadModelMemory() {
         viewModelScope.launch {
             modelLifecycleManager.ensureModelReady(modelProfileManager.currentProfile.value.modelName)
+        }
+    }
+
+    fun onAudioPermissionGranted() {
+        try {
+            voiceManager.onAudioPermissionGranted()
+        } catch (e: Exception) {
+            android.util.Log.w("JarvisViewModel", "Error handling audio permission: ${e.message}")
         }
     }
 

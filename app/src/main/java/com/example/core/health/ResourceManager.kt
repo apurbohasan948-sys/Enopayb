@@ -33,12 +33,50 @@ class ResourceManager(private val context: Context) {
     private val _resourceMode = MutableStateFlow(ResourceMode.BALANCED)
     val resourceMode: StateFlow<ResourceMode> = _resourceMode.asStateFlow()
 
-    private val _currentSnapshot = MutableStateFlow(captureSnapshot())
+    private val _currentSnapshot = MutableStateFlow(createInitialSnapshot())
     val currentSnapshot: StateFlow<ResourceSnapshot> = _currentSnapshot.asStateFlow()
 
     fun setResourceMode(mode: ResourceMode) {
         _resourceMode.value = mode
         refreshSnapshot()
+    }
+
+    private fun createInitialSnapshot(): ResourceSnapshot {
+        var batteryPct = 100
+        var isCharging = false
+
+        try {
+            val ifilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val batteryStatus = context.registerReceiver(null, ifilter)
+            val level = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            if (level >= 0 && scale > 0) {
+                batteryPct = (level * 100 / scale.toFloat()).toInt()
+            }
+            val status = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+        } catch (e: Exception) {}
+
+        val isSystemPowerSave = powerManager?.isPowerSaveMode == true
+        val runtime = Runtime.getRuntime()
+        val usedRam = ((runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)).toInt()
+        val maxRam = (runtime.maxMemory() / (1024 * 1024)).toInt()
+
+        val effectiveMode = when {
+            (batteryPct <= 15 && !isCharging) || isSystemPowerSave -> ResourceMode.BATTERY_SAVER
+            else -> ResourceMode.BALANCED
+        }
+
+        return ResourceSnapshot(
+            mode = effectiveMode,
+            batteryPercent = batteryPct,
+            isCharging = isCharging,
+            isPowerSaveMode = isSystemPowerSave,
+            ramUsedMb = usedRam,
+            ramAvailableMb = maxRam - usedRam,
+            isThermalThrottling = false
+        )
     }
 
     fun captureSnapshot(): ResourceSnapshot {
@@ -79,7 +117,7 @@ class ResourceManager(private val context: Context) {
             ramAvailableMb = maxRam - usedRam,
             isThermalThrottling = false
         )
-        _currentSnapshot.value = snapshot
+        _currentSnapshot?.value = snapshot
         return snapshot
     }
 

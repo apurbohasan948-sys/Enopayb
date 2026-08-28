@@ -37,7 +37,12 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider, TextToSpee
     private var currentOnError: (() -> Unit)? = null
 
     init {
-        tts = TextToSpeech(context.applicationContext, this)
+        try {
+            tts = TextToSpeech(context.applicationContext, this)
+        } catch (e: Throwable) {
+            Log.w("AndroidTTSProvider", "Failed to initialize TextToSpeech: ${e.message}")
+            tts = null
+        }
     }
 
     override fun initialize(onReady: () -> Unit) {
@@ -49,45 +54,57 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider, TextToSpee
     }
 
     override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            _isReady = true
-            setupProgressListener()
-            applyLanguageInternal()
-            onReadyCallback?.invoke()
-            onReadyCallback = null
-        } else {
-            Log.e("AndroidTTSProvider", "TTS Initialization failed: status $status")
+        try {
+            if (status == TextToSpeech.SUCCESS) {
+                _isReady = true
+                setupProgressListener()
+                applyLanguageInternal()
+                onReadyCallback?.invoke()
+                onReadyCallback = null
+            } else {
+                Log.e("AndroidTTSProvider", "TTS Initialization failed: status $status")
+            }
+        } catch (e: Throwable) {
+            Log.w("AndroidTTSProvider", "onInit exception: ${e.message}")
         }
     }
 
     private fun setupProgressListener() {
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                currentOnStart?.invoke()
-            }
+        try {
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {
+                    try { currentOnStart?.invoke() } catch (e: Throwable) { Log.w("AndroidTTSProvider", "onStart error: ${e.message}") }
+                }
 
-            override fun onDone(utteranceId: String?) {
-                currentOnDone?.invoke()
-            }
+                override fun onDone(utteranceId: String?) {
+                    try { currentOnDone?.invoke() } catch (e: Throwable) { Log.w("AndroidTTSProvider", "onDone error: ${e.message}") }
+                }
 
-            override fun onError(utteranceId: String?) {
-                currentOnError?.invoke()
-            }
-        })
+                override fun onError(utteranceId: String?) {
+                    try { currentOnError?.invoke() } catch (e: Throwable) { Log.w("AndroidTTSProvider", "onError error: ${e.message}") }
+                }
+            })
+        } catch (e: Throwable) {
+            Log.w("AndroidTTSProvider", "setupProgressListener error: ${e.message}")
+        }
     }
 
     private fun applyLanguageInternal() {
         if (!_isReady) return
-        val locale = when (currentLangCode.uppercase()) {
-            "BN", "BANGLA", "BANGLISH" -> Locale("bn", "BD")
-            else -> Locale.US
+        try {
+            val locale = when (currentLangCode.uppercase()) {
+                "BN", "BANGLA", "BANGLISH" -> Locale("bn", "BD")
+                else -> Locale.US
+            }
+            val res = tts?.setLanguage(locale)
+            if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts?.setLanguage(Locale.US)
+            }
+            tts?.setSpeechRate(rate)
+            tts?.setPitch(pitchVal)
+        } catch (e: Throwable) {
+            Log.w("AndroidTTSProvider", "applyLanguageInternal error: ${e.message}")
         }
-        val res = tts?.setLanguage(locale)
-        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-            tts?.setLanguage(Locale.US)
-        }
-        tts?.setSpeechRate(rate)
-        tts?.setPitch(pitchVal)
     }
 
     override fun speak(
@@ -106,12 +123,17 @@ class AndroidTTSProvider(private val context: Context) : TTSProvider, TextToSpee
         currentOnDone = onDone
         currentOnError = onError
 
-        applyLanguageInternal()
+        try {
+            applyLanguageInternal()
 
-        val params = Bundle().apply {
-            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+            val params = Bundle().apply {
+                putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+            }
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        } catch (e: Throwable) {
+            Log.w("AndroidTTSProvider", "speak error: ${e.message}")
+            onError()
         }
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
     }
 
     override fun stop() {

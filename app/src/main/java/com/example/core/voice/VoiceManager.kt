@@ -88,6 +88,10 @@ class VoiceManager(
         interactionManager.setWakeSensitivity(sens)
     }
 
+    fun onAudioPermissionGranted() {
+        interactionManager.onAudioPermissionGranted()
+    }
+
     fun setWakeWordEnabled(enabled: Boolean) {
         interactionManager.setWakeWordEnabled(enabled)
     }
