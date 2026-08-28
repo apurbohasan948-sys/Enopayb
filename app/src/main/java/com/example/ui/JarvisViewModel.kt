@@ -336,15 +336,42 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val apiTestStatus: StateFlow<ApiTestStatus> = _apiTestStatus.asStateFlow()
 
     init {
-        voiceManager.agentCore = jarvisAgentCore
-        voiceManager.toolRouter = toolRouter
-        voiceManager.repository = repository
-        voiceManager.currentLanguage = _currentLanguage.value
-        syncGeminiProviderSettings()
-        refreshAccessibilityDiagnostics()
-        setupPersistentBrainDirectories()
-        performStartupCrashRecovery()
-        performanceMonitor.captureMemorySnapshot()
+        try {
+            com.example.core.health.CrashReporter.currentScreen = "Main Console"
+            com.example.core.health.CrashReporter.currentService = "JarvisViewModel"
+            com.example.core.health.CrashReporter.lastAction = "Initializing ViewModel"
+
+            voiceManager.agentCore = jarvisAgentCore
+            voiceManager.toolRouter = toolRouter
+            voiceManager.repository = repository
+            voiceManager.currentLanguage = _currentLanguage.value
+
+            syncGeminiProviderSettings()
+
+            try {
+                refreshAccessibilityDiagnostics()
+            } catch (e: Exception) {
+                android.util.Log.w("JarvisViewModel", "Accessibility diag init warning", e)
+            }
+
+            // Asynchronous, non-blocking setup on IO dispatcher
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    setupPersistentBrainDirectories()
+                    performStartupCrashRecovery()
+                    performanceMonitor.captureMemorySnapshot()
+                } catch (e: Exception) {
+                    android.util.Log.w("JarvisViewModel", "Startup IO background task warning: ${e.message}")
+                }
+            }
+
+            // Mark successful UI launch
+            com.example.core.health.CrashReporter.markSuccessfulStartup(application)
+            android.util.Log.i("JarvisViewModel", "JarvisViewModel initialized successfully.")
+        } catch (e: Throwable) {
+            android.util.Log.e("JarvisViewModel", "Startup initialization caught fatal error", e)
+            com.example.core.health.CrashReporter.recordCrash(application, e, overrideService = "JarvisViewModel", overrideAction = "init")
+        }
     }
 
     private fun setupPersistentBrainDirectories() {

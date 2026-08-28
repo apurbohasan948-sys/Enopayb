@@ -70,6 +70,7 @@ import com.example.ui.JarvisViewModel
 import com.example.ui.screens.AutonomousDashboardScreen
 import com.example.ui.screens.CapabilitiesScreen
 import com.example.ui.screens.DebugConsoleScreen
+import com.example.ui.screens.DiagnosticScreen
 import com.example.ui.screens.HudConsoleScreen
 import com.example.ui.screens.MemoryScreen
 import com.example.ui.screens.ModelsScreen
@@ -94,6 +95,7 @@ import com.example.ui.theme.MyApplicationTheme
 
 enum class JarvisTab(val title: String, val icon: ImageVector) {
     CONSOLE("HUD", Icons.Default.Terminal),
+    DIAGNOSTIC("HEALTH", Icons.Default.Security),
     AUTONOMOUS("AUTO", Icons.Default.AutoAwesome),
     PLAN("PLAN", Icons.Default.AltRoute),
     DEBUG("DEBUG", Icons.Default.BugReport),
@@ -225,26 +227,27 @@ fun JarvisApp(viewModel: JarvisViewModel) {
                                 }
                             }
 
-                            // Compact System Health Chip
+                            // Compact System Health Chip (Tap to open Health & Safe Mode Diagnostics)
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = JarvisCardBg,
-                                border = BorderStroke(0.8.dp, JarvisBorder)
+                                color = if (viewModel.preferences.isSafeModeEnabled) JarvisAmber.copy(alpha = 0.2f) else JarvisCardBg,
+                                border = BorderStroke(0.8.dp, if (viewModel.preferences.isSafeModeEnabled) JarvisAmber else JarvisBorder),
+                                modifier = Modifier.clickable { currentTab = JarvisTab.DIAGNOSTIC }
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        Icons.Default.Bolt,
-                                        contentDescription = null,
-                                        tint = JarvisCyan,
+                                        if (viewModel.preferences.isSafeModeEnabled) Icons.Default.Security else Icons.Default.Bolt,
+                                        contentDescription = "System Health Diagnostics",
+                                        tint = if (viewModel.preferences.isSafeModeEnabled) JarvisAmber else JarvisCyan,
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "${hardwareMetrics.ramAllocatedMb}MB",
-                                        color = JarvisTextPrimary,
+                                        text = if (viewModel.preferences.isSafeModeEnabled) "SAFE MODE" else "${hardwareMetrics.ramAllocatedMb}MB",
+                                        color = if (viewModel.preferences.isSafeModeEnabled) JarvisAmber else JarvisTextPrimary,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Medium,
                                         fontFamily = FontFamily.Monospace
@@ -316,6 +319,7 @@ fun JarvisApp(viewModel: JarvisViewModel) {
         ) {
             when (currentTab) {
                 JarvisTab.CONSOLE -> HudConsoleScreen(viewModel = viewModel)
+                JarvisTab.DIAGNOSTIC -> DiagnosticScreen(viewModel = viewModel)
                 JarvisTab.AUTONOMOUS -> AutonomousDashboardScreen(viewModel = viewModel)
                 JarvisTab.PLAN -> TaskPlanViewerScreen(viewModel = viewModel)
                 JarvisTab.DEBUG -> DebugConsoleScreen(viewModel = viewModel)

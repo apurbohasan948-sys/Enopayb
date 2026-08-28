@@ -125,87 +125,94 @@ class UniversalScreenUnderstandingEngine(
             it.role == targetRole && (it.clickable || it.editable) && it.confidence >= 0.85f
         }
 
-        val needsVisualScan = forceVisualScan ||
+        val prefs = com.example.data.local.preference.JarvisPreferences(context)
+        val isVisionAllowed = prefs.isVisionEnabled && !prefs.isSafeModeEnabled
+
+        val needsVisualScan = isVisionAllowed && (forceVisualScan ||
                 isGraphicalUI ||
                 (!hasReliableTarget && taskGoal != null) ||
-                screenCaptureManager.shouldCaptureScreenshot(diag.totalNodes, diag.clickableNodes, currentPackage, taskGoal)
+                screenCaptureManager.shouldCaptureScreenshot(diag.totalNodes, diag.clickableNodes, currentPackage, taskGoal))
 
         var screenshotBase64: String? = null
         var bitmap: Bitmap? = null
 
         if (needsVisualScan) {
-            bitmap = screenCaptureManager.captureScreen(force = forceVisualScan)
-            _latestScreenshotBitmap.value = bitmap
+            try {
+                bitmap = screenCaptureManager.captureScreen(force = forceVisualScan)
+                _latestScreenshotBitmap.value = bitmap
 
-            if (bitmap != null) {
-                try {
-                    val baos = ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
-                    screenshotBase64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-
-                // 4. OCR Integration
-                val ocrResult = ocrProvider.extractText(bitmap)
-                ocrResult.elements.forEach { ocrElem ->
-                    val isDuplicate = semanticElements.any { elem ->
-                        elem.bounds.contains(ocrElem.boundingBox.centerX(), ocrElem.boundingBox.centerY()) ||
-                                ocrElem.boundingBox.contains(elem.bounds.centerX(), elem.bounds.centerY())
+                if (bitmap != null) {
+                    try {
+                        val baos = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
+                        screenshotBase64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
 
-                    if (!isDuplicate && ocrElem.text.isNotBlank()) {
-                        val ocrRole = SemanticTarget.normalizeIntent(ocrElem.text)
-                        semanticElements.add(
-                            SemanticUIElement(
-                                id = "ocr_${elementIdCounter++}",
-                                role = ocrRole,
-                                label = ocrElem.text,
-                                description = null,
-                                iconMeaning = null,
-                                bounds = ocrElem.boundingBox,
-                                clickable = true,
-                                editable = ocrRole == SemanticTarget.INPUT_FIELD,
-                                scrollable = false,
-                                confidence = ocrElem.confidence,
-                                source = "OCR"
+                    // 4. OCR Integration
+                    val ocrResult = ocrProvider.extractText(bitmap)
+                    ocrResult.elements.forEach { ocrElem ->
+                        val isDuplicate = semanticElements.any { elem ->
+                            elem.bounds.contains(ocrElem.boundingBox.centerX(), ocrElem.boundingBox.centerY()) ||
+                                    ocrElem.boundingBox.contains(elem.bounds.centerX(), elem.bounds.centerY())
+                        }
+
+                        if (!isDuplicate && ocrElem.text.isNotBlank()) {
+                            val ocrRole = SemanticTarget.normalizeIntent(ocrElem.text)
+                            semanticElements.add(
+                                SemanticUIElement(
+                                    id = "ocr_${elementIdCounter++}",
+                                    role = ocrRole,
+                                    label = ocrElem.text,
+                                    description = null,
+                                    iconMeaning = null,
+                                    bounds = ocrElem.boundingBox,
+                                    clickable = true,
+                                    editable = ocrRole == SemanticTarget.INPUT_FIELD,
+                                    scrollable = false,
+                                    confidence = ocrElem.confidence,
+                                    source = "OCR"
+                                )
                             )
-                        )
+                        }
                     }
-                }
 
-                // 5. Local Vision / Heuristics / Gemini Multimodal Fallback
-                val visionResult = hybridVisionProvider.analyzeScreenshot(
-                    bitmap = bitmap,
-                    prompt = "Analyze UI controls for task: ${taskGoal ?: "general navigation"}",
-                    semanticGoal = taskGoal,
-                    appPackage = currentPackage,
-                    screenWidth = bitmap.width,
-                    screenHeight = bitmap.height
-                )
+                    // 5. Local Vision / Heuristics / Gemini Multimodal Fallback
+                    val visionResult = hybridVisionProvider.analyzeScreenshot(
+                        bitmap = bitmap,
+                        prompt = "Analyze UI controls for task: ${taskGoal ?: "general navigation"}",
+                        semanticGoal = taskGoal,
+                        appPackage = currentPackage,
+                        screenWidth = bitmap.width,
+                        screenHeight = bitmap.height
+                    )
 
-                visionResult.elements.forEach { vis ->
-                    val isCovered = semanticElements.any { elem ->
-                        elem.bounds.contains(vis.bounds.centerX(), vis.bounds.centerY())
-                    }
-                    if (!isCovered) {
-                        semanticElements.add(
-                            SemanticUIElement(
-                                id = "vis_${elementIdCounter++}",
-                                role = vis.semanticRole,
-                                label = null,
-                                description = vis.visualDescription,
-                                iconMeaning = vis.visualDescription,
-                                bounds = vis.bounds,
-                                clickable = true,
-                                editable = vis.semanticRole == SemanticTarget.INPUT_FIELD,
-                                scrollable = false,
-                                confidence = vis.confidence,
-                                source = vis.source
+                    visionResult.elements.forEach { vis ->
+                        val isCovered = semanticElements.any { elem ->
+                            elem.bounds.contains(vis.bounds.centerX(), vis.bounds.centerY())
+                        }
+                        if (!isCovered) {
+                            semanticElements.add(
+                                SemanticUIElement(
+                                    id = "vis_${elementIdCounter++}",
+                                    role = vis.semanticRole,
+                                    label = null,
+                                    description = vis.visualDescription,
+                                    iconMeaning = vis.visualDescription,
+                                    bounds = vis.bounds,
+                                    clickable = true,
+                                    editable = vis.semanticRole == SemanticTarget.INPUT_FIELD,
+                                    scrollable = false,
+                                    confidence = vis.confidence,
+                                    source = vis.source
+                                )
                             )
-                        )
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Visual scanning failed safely: ${e.message}")
             }
         }
 

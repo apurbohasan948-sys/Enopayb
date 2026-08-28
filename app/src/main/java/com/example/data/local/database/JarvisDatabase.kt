@@ -290,17 +290,30 @@ abstract class JarvisDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context, scope: CoroutineScope): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    JarvisDatabase::class.java,
-                    "jarvis_brain.db"
-                )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
-                    .fallbackToDestructiveMigration()
-                    .addCallback(JarvisDatabaseCallback(scope))
-                    .build()
-                INSTANCE = instance
-                instance
+                try {
+                    val instance = Room.databaseBuilder(
+                        context.applicationContext,
+                        JarvisDatabase::class.java,
+                        "jarvis_brain.db"
+                    )
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                        .addCallback(JarvisDatabaseCallback(scope))
+                        .build()
+                    INSTANCE = instance
+                    instance
+                } catch (e: Exception) {
+                    android.util.Log.e("JARVIS_DB", "Failed to build Room database safely", e)
+                    // Non-destructive fallback: attempt safe re-open without dropping tables
+                    val fallback = Room.databaseBuilder(
+                        context.applicationContext,
+                        JarvisDatabase::class.java,
+                        "jarvis_brain.db"
+                    )
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                        .build()
+                    INSTANCE = fallback
+                    fallback
+                }
             }
         }
     }

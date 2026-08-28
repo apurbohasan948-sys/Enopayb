@@ -50,10 +50,10 @@ class ModelLifecycleManager(
 
     private val _status = MutableStateFlow(
         ModelResourceStatus(
-            state = ModelLifecycleState.IDLE,
+            state = ModelLifecycleState.UNLOADED,
             activeModelName = "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
-            estimatedRamUsageMb = 850,
-            lastActiveTimestamp = System.currentTimeMillis()
+            estimatedRamUsageMb = 0,
+            lastActiveTimestamp = 0L
         )
     )
     val status: StateFlow<ModelResourceStatus> = _status.asStateFlow()
@@ -69,7 +69,7 @@ class ModelLifecycleManager(
     }
 
     /**
-     * Prepares model for inference.
+     * Prepares model for inference after performing strict memory verification.
      */
     suspend fun ensureModelReady(modelName: String = "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"): Boolean {
         idleJob?.cancel()
@@ -82,14 +82,40 @@ class ModelLifecycleManager(
             return true
         }
 
-        _status.value = current.copy(state = ModelLifecycleState.LOADING, activeModelName = modelName)
-        delay(80) // Simulate fast mmap initialization
+        // Memory & Safe Mode Check
+        val prefs = com.example.data.local.preference.JarvisPreferences(context)
+        if (prefs.isSafeModeEnabled || !prefs.isLocalModelEnabled) {
+            _status.value = current.copy(
+                state = ModelLifecycleState.ERROR,
+                errorMessage = "Safe Mode active. Local model disabled."
+            )
+            return false
+        }
+
+        val memInfo = android.app.ActivityManager.MemoryInfo()
+        val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+        actManager?.getMemoryInfo(memInfo)
+        val availableMb = memInfo.availMem / (1024 * 1024)
+
+        // Require at least 350 MB free RAM before loading local weights
+        if (memInfo.lowMemory || availableMb < 350) {
+            Log.w(TAG, "Insufficient RAM to load model: ${availableMb}MB available")
+            _status.value = current.copy(
+                state = ModelLifecycleState.ERROR,
+                errorMessage = "Local model unavailable because available memory is insufficient."
+            )
+            return false
+        }
+
+        _status.value = current.copy(state = ModelLifecycleState.LOADING, activeModelName = modelName, errorMessage = null)
+        delay(60) // Fast mmap initialization
 
         _status.value = current.copy(
             state = ModelLifecycleState.READY,
             activeModelName = modelName,
             estimatedRamUsageMb = 850,
-            lastActiveTimestamp = System.currentTimeMillis()
+            lastActiveTimestamp = System.currentTimeMillis(),
+            errorMessage = null
         )
         return true
     }

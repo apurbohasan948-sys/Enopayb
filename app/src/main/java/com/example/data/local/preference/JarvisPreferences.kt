@@ -22,6 +22,15 @@ class JarvisPreferences(context: Context) {
         private const val KEY_AUTO_SKILL_CREATION_ENABLED = "auto_skill_creation_enabled"
         private const val KEY_PRIVACY_FILTERING_ENABLED = "privacy_filtering_enabled"
 
+        // Emergency Stabilization & Safe Mode Keys
+        private const val KEY_SAFE_MODE_ENABLED = "safe_mode_enabled"
+        private const val KEY_VISION_ENABLED = "vision_enabled"
+        private const val KEY_LOCAL_MODEL_ENABLED = "local_model_enabled"
+        private const val KEY_GEMINI_SERVICE_ENABLED = "gemini_service_enabled"
+        private const val KEY_ACCESSIBILITY_SERVICE_ENABLED = "accessibility_service_enabled"
+        private const val KEY_AUTONOMOUS_WORKERS_ENABLED = "autonomous_workers_enabled"
+        private const val KEY_SERVICE_CRASH_PREFIX = "svc_crash_"
+
         const val DEFAULT_MODEL = "gemini-3.5-flash"
         const val DEFAULT_TEMPERATURE = 0.4f
         const val DEFAULT_SYSTEM_PROMPT = "You are J.A.R.V.I.S., a personal AI assistant. Be direct, concise, and helpful."
@@ -98,6 +107,62 @@ class JarvisPreferences(context: Context) {
     var isGeminiTeacherAllowed: Boolean
         get() = isGeminiTeacherEnabled
         set(value) { isGeminiTeacherEnabled = value }
+
+    // Emergency Safe Mode & Component Isolation
+    var isSafeModeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SAFE_MODE_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_SAFE_MODE_ENABLED, value).apply()
+
+    /**
+     * Vision is OFF by default after Phase 10 isolation to guarantee startup stability.
+     */
+    var isVisionEnabled: Boolean
+        get() = prefs.getBoolean(KEY_VISION_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_VISION_ENABLED, value).apply()
+
+    var isLocalModelEnabled: Boolean
+        get() = prefs.getBoolean(KEY_LOCAL_MODEL_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_LOCAL_MODEL_ENABLED, value).apply()
+
+    var isGeminiServiceEnabled: Boolean
+        get() = prefs.getBoolean(KEY_GEMINI_SERVICE_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_GEMINI_SERVICE_ENABLED, value).apply()
+
+    var isAccessibilityServiceEnabled: Boolean
+        get() = prefs.getBoolean(KEY_ACCESSIBILITY_SERVICE_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_ACCESSIBILITY_SERVICE_ENABLED, value).apply()
+
+    var isAutonomousWorkersEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AUTONOMOUS_WORKERS_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTONOMOUS_WORKERS_ENABLED, value).apply()
+
+    // Service crash & restart isolation (Crash >= 3 -> temporary shutdown)
+    fun getServiceCrashCount(serviceName: String): Int {
+        return prefs.getInt(KEY_SERVICE_CRASH_PREFIX + serviceName, 0)
+    }
+
+    fun incrementServiceCrashCount(serviceName: String): Int {
+        val next = getServiceCrashCount(serviceName) + 1
+        prefs.edit().putInt(KEY_SERVICE_CRASH_PREFIX + serviceName, next).apply()
+        return next
+    }
+
+    fun resetServiceCrashCount(serviceName: String) {
+        prefs.edit().putInt(KEY_SERVICE_CRASH_PREFIX + serviceName, 0).apply()
+    }
+
+    fun isServiceDisabledDueToCrashes(serviceName: String, threshold: Int = 3): Boolean {
+        if (isSafeModeEnabled) return true
+        return getServiceCrashCount(serviceName) >= threshold
+    }
+
+    fun resetAllServiceCrashCounts() {
+        val editor = prefs.edit()
+        prefs.all.keys.filter { it.startsWith(KEY_SERVICE_CRASH_PREFIX) }.forEach {
+            editor.remove(it)
+        }
+        editor.apply()
+    }
 
     fun clearApiKey() {
         prefs.edit().remove(KEY_GEMINI_API_KEY).apply()

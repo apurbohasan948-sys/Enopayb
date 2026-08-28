@@ -120,56 +120,63 @@ class ScreenUnderstandingEngine(
         }
 
         // Determine if visual/screenshot scan is needed
+        val prefs = com.example.data.local.preference.JarvisPreferences(context)
+        val isVisionAllowed = prefs.isVisionEnabled && !prefs.isSafeModeEnabled
+
         val targetRole = semanticGoal?.let { SemanticTarget.normalizeIntent(it) }
         val hasSemanticMatch = targetRole != null && accessibilityElements.any {
             it.semanticRole == targetRole && (it.text != null || it.contentDescription != null || it.isClickable)
         }
-        val shouldScanVisuals = forceVisualScan ||
+        val shouldScanVisuals = isVisionAllowed && (forceVisualScan ||
                 !hasSemanticMatch ||
-                screenCaptureManager.shouldCaptureScreenshot(diag.totalNodes, diag.clickableNodes, currentPackage, semanticGoal)
+                screenCaptureManager.shouldCaptureScreenshot(diag.totalNodes, diag.clickableNodes, currentPackage, semanticGoal))
 
         val visualElements = mutableListOf<VisualElement>()
         var screenshotBase64: String? = null
 
         if (shouldScanVisuals) {
-            val bitmap = screenCaptureManager.captureScreen(force = forceVisualScan)
-            _latestScreenshotBitmap.value = bitmap
+            try {
+                val bitmap = screenCaptureManager.captureScreen(force = forceVisualScan)
+                _latestScreenshotBitmap.value = bitmap
 
-            if (bitmap != null) {
-                try {
-                    val baos = ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
-                    screenshotBase64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                if (bitmap != null) {
+                    try {
+                        val baos = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
+                        screenshotBase64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
 
-                // 2. OCR Layer
-                val ocrResult = ocrProvider.extractText(bitmap)
-                ocrResult.elements.forEach { ocrElem ->
-                    visualElements.add(
-                        VisualElement(
-                            semanticRole = SemanticTarget.normalizeIntent(ocrElem.text),
-                            visualDescription = "OCR: ${ocrElem.text}",
-                            bounds = ocrElem.boundingBox,
-                            confidence = ocrElem.confidence,
-                            source = "OCR"
+                    // 2. OCR Layer
+                    val ocrResult = ocrProvider.extractText(bitmap)
+                    ocrResult.elements.forEach { ocrElem ->
+                        visualElements.add(
+                            VisualElement(
+                                semanticRole = SemanticTarget.normalizeIntent(ocrElem.text),
+                                visualDescription = "OCR: ${ocrElem.text}",
+                                bounds = ocrElem.boundingBox,
+                                confidence = ocrElem.confidence,
+                                source = "OCR"
+                            )
                         )
+                    }
+
+                    // 3. Multimodal / Heuristic Vision Analysis
+                    val visionResult = hybridVisionProvider.analyzeScreenshot(
+                        bitmap = bitmap,
+                        prompt = "Detect UI controls for goal: ${semanticGoal ?: "general"}",
+                        semanticGoal = semanticGoal,
+                        appPackage = currentPackage,
+                        screenWidth = bitmap.width,
+                        screenHeight = bitmap.height
                     )
+
+                    visualElements.addAll(visionResult.elements)
+                    _lastDetectedElements.value = visualElements
                 }
-
-                // 3. Multimodal / Heuristic Vision Analysis
-                val visionResult = hybridVisionProvider.analyzeScreenshot(
-                    bitmap = bitmap,
-                    prompt = "Detect UI controls for goal: ${semanticGoal ?: "general"}",
-                    semanticGoal = semanticGoal,
-                    appPackage = currentPackage,
-                    screenWidth = bitmap.width,
-                    screenHeight = bitmap.height
-                )
-
-                visualElements.addAll(visionResult.elements)
-                _lastDetectedElements.value = visualElements
+            } catch (e: Exception) {
+                android.util.Log.w("ScreenUnderstanding", "Visual scan failed safely", e)
             }
         }
 
