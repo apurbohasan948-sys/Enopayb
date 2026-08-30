@@ -166,8 +166,24 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val visionRouter = com.example.core.vision.VisionRouter(localVisionProvider, geminiVisionProvider, cloudUsagePolicy)
     val screenEngine = ScreenUnderstandingEngine(application, hybridVisionProvider, repository)
 
-    private val toolRouter = ToolRouter(application, screenEngine)
+    private val toolRouter = ToolRouter(application, screenEngine, database.jarvisDao())
     val agentController = AgentController(application, toolRouter, screenEngine)
+
+    // Phase 15: Device Managers & Providers
+    val deviceCapabilityManager = toolRouter.deviceCapabilityManager
+    val appManager = toolRouter.appManager
+    val deviceStatusProvider = toolRouter.deviceStatusProvider
+    val mediaControllerBridge = toolRouter.mediaControllerBridge
+    val flashlightController = toolRouter.flashlightController
+    val settingsNavigator = toolRouter.settingsNavigator
+    val fileAccessManager = toolRouter.fileAccessManager
+    val deviceSecurityAudit = toolRouter.deviceSecurityAudit
+
+    val registeredAppsList: StateFlow<List<com.example.data.local.entity.AppRegistryEntity>> = repository.allRegisteredApps
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val deviceActionHistory: StateFlow<List<com.example.data.local.entity.DeviceActionHistoryEntity>> = repository.recentDeviceActions
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Phase 8 & 9 autonomous dependencies
     val localSLMProvider = LocalSLMModelProvider(application)
@@ -1194,10 +1210,6 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun refreshCapabilities() {
-        _capabilitiesList.value = capabilityManager.getAllCapabilities()
-    }
-
     fun executeGoal(goal: String) {
         viewModelScope.launch {
             _isProcessing.value = true
@@ -1833,6 +1845,42 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             database.jarvisDao().deleteKnowledgeItem(item)
             refreshBrainStorageStats()
+        }
+    }
+
+    // === PHASE 15: DEVICE CAPABILITY & CONTROL ACTIONS ===
+
+    fun refreshCapabilities() {
+        _capabilitiesList.value = capabilityManager.getAllCapabilities()
+        viewModelScope.launch(Dispatchers.IO) {
+            deviceCapabilityManager.detectCapabilities()
+        }
+    }
+
+    fun scanInstalledApps(onDone: (Int) -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val apps = appManager.scanInstalledApps()
+            withContext(Dispatchers.Main) {
+                onDone(apps.size)
+            }
+        }
+    }
+
+    fun executeDeviceTool(intent: ToolIntent) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            val result = toolRouter.executeTool(intent)
+            _lastExecutionResult.value = result
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "ACTION",
+                    message = "[DEVICE TOOL: ${intent.toolName}]\n${result.output}",
+                    providerType = "DEVICE_CONTROLLER",
+                    toolCallInfo = intent.toolName
+                )
+            )
+            voiceManager.speak(result.output)
+            _isProcessing.value = false
         }
     }
 }

@@ -470,4 +470,61 @@ interface JarvisDao {
 
     @Query("DELETE FROM brain_snapshots")
     suspend fun clearAllBrainSnapshots()
+
+    // === DEVICE CAPABILITIES (PHASE 15) ===
+    @Query("SELECT * FROM device_capabilities ORDER BY id ASC")
+    fun getAllDeviceCapabilities(): Flow<List<com.example.data.local.entity.DeviceCapabilityEntity>>
+
+    @Query("SELECT * FROM device_capabilities ORDER BY id ASC")
+    suspend fun getAllDeviceCapabilitiesSync(): List<com.example.data.local.entity.DeviceCapabilityEntity>
+
+    @Query("SELECT * FROM device_capabilities WHERE id = :id LIMIT 1")
+    suspend fun getDeviceCapabilityById(id: String): com.example.data.local.entity.DeviceCapabilityEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeviceCapability(capability: com.example.data.local.entity.DeviceCapabilityEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeviceCapabilities(capabilities: List<com.example.data.local.entity.DeviceCapabilityEntity>)
+
+    @Query("DELETE FROM device_capabilities")
+    suspend fun clearAllDeviceCapabilities()
+
+    // === APP REGISTRY (PHASE 15) ===
+    @Query("SELECT * FROM app_registry ORDER BY applicationLabel ASC")
+    fun getAllRegisteredApps(): Flow<List<com.example.data.local.entity.AppRegistryEntity>>
+
+    @Query("SELECT * FROM app_registry ORDER BY applicationLabel ASC")
+    suspend fun getAllRegisteredAppsSync(): List<com.example.data.local.entity.AppRegistryEntity>
+
+    @Query("SELECT * FROM app_registry WHERE packageName = :packageName LIMIT 1")
+    suspend fun getRegisteredAppByPackage(packageName: String): com.example.data.local.entity.AppRegistryEntity?
+
+    @Query("SELECT * FROM app_registry WHERE applicationLabel LIKE '%' || :query || '%' OR packageName LIKE '%' || :query || '%' LIMIT 10")
+    suspend fun searchRegisteredApps(query: String): List<com.example.data.local.entity.AppRegistryEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRegisteredApp(app: com.example.data.local.entity.AppRegistryEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRegisteredApps(apps: List<com.example.data.local.entity.AppRegistryEntity>)
+
+    @Delete
+    suspend fun deleteRegisteredApp(app: com.example.data.local.entity.AppRegistryEntity)
+
+    @Query("DELETE FROM app_registry")
+    suspend fun clearAppRegistry()
+
+    // === DEVICE ACTION HISTORY (PHASE 15) ===
+    @Query("SELECT * FROM device_action_history ORDER BY timestamp DESC LIMIT 200")
+    fun getRecentDeviceActions(): Flow<List<com.example.data.local.entity.DeviceActionHistoryEntity>>
+
+    @Query("SELECT * FROM device_action_history ORDER BY timestamp DESC LIMIT 50")
+    suspend fun getRecentDeviceActionsSync(): List<com.example.data.local.entity.DeviceActionHistoryEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeviceAction(action: com.example.data.local.entity.DeviceActionHistoryEntity): Long
+
+    @Query("DELETE FROM device_action_history")
+    suspend fun clearDeviceActionHistory()
 }

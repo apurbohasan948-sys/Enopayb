@@ -275,4 +275,17 @@ class JarvisRepository(private val dao: JarvisDao) {
         }
         return@withContext importedCount
     }
+
+    // === PHASE 15: DEVICE CAPABILITIES & ACTIONS ===
+    val allDeviceCapabilities: Flow<List<com.example.data.local.entity.DeviceCapabilityEntity>> = dao.getAllDeviceCapabilities()
+    val allRegisteredApps: Flow<List<com.example.data.local.entity.AppRegistryEntity>> = dao.getAllRegisteredApps()
+    val recentDeviceActions: Flow<List<com.example.data.local.entity.DeviceActionHistoryEntity>> = dao.getRecentDeviceActions()
+
+    suspend fun insertDeviceAction(action: com.example.data.local.entity.DeviceActionHistoryEntity): Long = withContext(Dispatchers.IO) {
+        dao.insertDeviceAction(action)
+    }
+
+    suspend fun clearDeviceActionHistory() = withContext(Dispatchers.IO) {
+        dao.clearDeviceActionHistory()
+    }
 }

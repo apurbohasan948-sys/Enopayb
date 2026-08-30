@@ -5,29 +5,32 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.hardware.camera2.CameraAccessException
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
 import android.net.Uri
-import android.os.BatteryManager
-import android.provider.Settings
+import android.os.Build
 import android.widget.Toast
-import androidx.core.content.ContextCompat
 import com.example.core.accessibility.JarvisAccessibilityService
 import com.example.core.communication.CommunicationHistoryTracker
 import com.example.core.contacts.ContactResolutionResult
 import com.example.core.contacts.ContactResolver
+import com.example.core.device.AppManager
+import com.example.core.device.DeviceCapabilityManager
+import com.example.core.device.DeviceStatusProvider
+import com.example.core.device.FileAccessManager
+import com.example.core.device.FlashlightController
+import com.example.core.device.MediaControllerBridge
+import com.example.core.device.SettingsNavigator
+import com.example.core.device.interaction.SemanticTapEngine
+import com.example.core.device.interaction.UniversalTextInputEngine
+import com.example.core.device.security.DeviceControlSecurityAudit
 import com.example.core.model.ToolIntent
 import com.example.core.sms.SmsManagerService
 import com.example.core.telephony.CallManager
 import com.example.core.vision.ScreenUnderstandingEngine
-import com.example.core.vision.SemanticTarget
 import com.example.core.whatsapp.WhatsAppController
+import com.example.data.local.dao.JarvisDao
+import com.example.data.local.entity.DeviceActionHistoryEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.URLEncoder
 
 data class ToolExecutionResult(
     val success: Boolean,
@@ -42,30 +45,84 @@ data class ToolExecutionResult(
 
 class ToolRouter(
     private val context: Context,
-    val screenEngine: ScreenUnderstandingEngine? = null
+    val screenEngine: ScreenUnderstandingEngine? = null,
+    val jarvisDao: JarvisDao? = null
 ) {
 
     val callManager by lazy { CallManager(context) }
     val smsManagerService by lazy { SmsManagerService(context) }
     val whatsAppController by lazy { WhatsAppController(context, screenEngine) }
-
-    private val cameraManager by lazy {
-        context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
-    }
+    val appManager by lazy { AppManager(context, jarvisDao) }
+    val deviceStatusProvider by lazy { DeviceStatusProvider(context) }
+    val mediaControllerBridge by lazy { MediaControllerBridge(context) }
+    val flashlightController by lazy { FlashlightController(context) }
+    val settingsNavigator by lazy { SettingsNavigator(context) }
+    val fileAccessManager by lazy { FileAccessManager(context) }
+    val semanticTapEngine by lazy { SemanticTapEngine(context) }
+    val universalTextInputEngine by lazy { UniversalTextInputEngine(context) }
+    val deviceCapabilityManager by lazy { DeviceCapabilityManager(context, jarvisDao) }
+    val deviceSecurityAudit by lazy { DeviceControlSecurityAudit(context, jarvisDao, deviceCapabilityManager) }
 
     private val clipboardManager by lazy {
         context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     }
 
     suspend fun executeTool(toolIntent: ToolIntent): ToolExecutionResult = withContext(Dispatchers.Main) {
-        try {
+        val startTime = System.currentTimeMillis()
+        var targetPackage = "system"
+        val toolResult: ToolExecutionResult = try {
             val args = toolIntent.arguments
             val toolName = toolIntent.toolName.lowercase()
 
             when (toolName) {
                 "open_app" -> {
                     val appName = args["app_name"] ?: args["appName"] ?: args["query"] ?: "YouTube"
-                    openApplication(appName)
+                    val launchRes = appManager.openApp(appName)
+                    targetPackage = launchRes.packageName
+                    ToolExecutionResult(
+                        success = launchRes.success,
+                        tool = "app_launcher",
+                        action = "open_app",
+                        output = launchRes.message,
+                        evidence = "AppManager.openApp targeted package '$targetPackage'",
+                        details = mapOf("packageName" to targetPackage, "label" to launchRes.applicationLabel),
+                        errorMessage = launchRes.error,
+                        verified = launchRes.success
+                    )
+                }
+                "open_app_settings" -> {
+                    val appName = args["app_name"] ?: args["appName"] ?: args["packageName"] ?: ""
+                    val res = appManager.openAppSettings(appName)
+                    targetPackage = res.packageName
+                    ToolExecutionResult(
+                        success = res.success,
+                        tool = "app_manager",
+                        action = "open_app_settings",
+                        output = res.message,
+                        evidence = "Application details settings launched for $targetPackage",
+                        details = mapOf("package" to targetPackage),
+                        errorMessage = res.error,
+                        verified = res.success
+                    )
+                }
+                "list_installed_apps" -> {
+                    val filter = args["filter"]?.lowercase()?.trim() ?: ""
+                    val allApps = appManager.scanInstalledAppsSync()
+                    val filtered = if (filter.isNotEmpty()) {
+                        allApps.filter { it.applicationLabel.lowercase().contains(filter) || it.packageName.contains(filter) }
+                    } else {
+                        allApps
+                    }
+                    val sample = filtered.take(20).joinToString(", ") { "${it.applicationLabel} (${it.packageName})" }
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "app_manager",
+                        action = "list_installed_apps",
+                        output = "Found ${filtered.size} apps${if (filter.isNotEmpty()) " matching '$filter'" else ""}. Sample: $sample",
+                        evidence = "PackageManager queried ${filtered.size} applications",
+                        details = mapOf("count" to filtered.size.toString()),
+                        verified = true
+                    )
                 }
                 "close_app" -> {
                     closeCurrentApp()
@@ -81,7 +138,7 @@ class ToolRouter(
                         verified = ok
                     )
                 }
-                "press_home" -> {
+                "press_home", "go_home" -> {
                     val ok = JarvisAccessibilityService.pressHome()
                     if (!ok) {
                         val homeIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -106,9 +163,20 @@ class ToolRouter(
                     val query = args["query"] ?: args["text"] ?: args["target"] ?: "Search"
                     findTextOnScreen(query)
                 }
-                "tap", "click", "tap_search", "click_element" -> {
+                "tap", "click", "tap_search", "click_element", "tap_target" -> {
                     val target = args["target_text"] ?: args["target"] ?: args["label"] ?: args["query"] ?: "Search"
-                    tapElement(target)
+                    val tapRes = semanticTapEngine.executeTap(target)
+                    targetPackage = JarvisAccessibilityService.currentForegroundApp.value
+                    ToolExecutionResult(
+                        success = tapRes.success,
+                        tool = "semantic_tap_engine",
+                        action = "tap_target",
+                        output = if (tapRes.success) "Tapped '$target' successfully via ${tapRes.methodUsed}." else "Could not tap '$target': ${tapRes.evidence}",
+                        evidence = tapRes.evidence,
+                        errorMessage = tapRes.error,
+                        details = mapOf("target" to target, "method" to tapRes.methodUsed, "verifiedStateChange" to tapRes.verifiedStateChange.toString()),
+                        verified = tapRes.success
+                    )
                 }
                 "long_press" -> {
                     val target = args["target_text"] ?: args["target"] ?: ""
@@ -126,7 +194,127 @@ class ToolRouter(
                 "type_text", "type", "set_text" -> {
                     val text = args["text"] ?: args["content"] ?: args["query"] ?: ""
                     val targetField = args["target"] ?: args["target_field"]
-                    typeTextOnScreen(targetField, text)
+                    val typeRes = universalTextInputEngine.executeType(text, targetField)
+                    targetPackage = JarvisAccessibilityService.currentForegroundApp.value
+                    ToolExecutionResult(
+                        success = typeRes.success,
+                        tool = "universal_text_engine",
+                        action = "type_text",
+                        output = if (typeRes.success) "Entered text \"$text\" into ${typeRes.targetField}." else "Typing failed: ${typeRes.evidence}",
+                        evidence = typeRes.evidence,
+                        errorMessage = typeRes.error,
+                        details = mapOf("typedText" to text, "targetField" to typeRes.targetField, "method" to typeRes.methodUsed),
+                        verified = typeRes.success
+                    )
+                }
+                "control_volume", "volume", "adjust_volume" -> {
+                    val action = args["action"] ?: "VOLUME_UP"
+                    val level = args["level"]?.toIntOrNull()
+                    val mediaRes = mediaControllerBridge.executeAction(action, level)
+                    ToolExecutionResult(
+                        success = mediaRes.success,
+                        tool = "media_controller",
+                        action = "control_volume",
+                        output = mediaRes.details,
+                        evidence = "AudioManager stream adjusted: action=$action, vol=${mediaRes.currentVolume}/${mediaRes.maxVolume}",
+                        details = mapOf("action" to action, "volume" to (mediaRes.currentVolume?.toString() ?: "")),
+                        errorMessage = mediaRes.error,
+                        verified = mediaRes.success
+                    )
+                }
+                "control_media", "media_control", "music" -> {
+                    val action = args["action"] ?: "PLAY_PAUSE"
+                    val mediaRes = mediaControllerBridge.executeAction(action)
+                    ToolExecutionResult(
+                        success = mediaRes.success,
+                        tool = "media_controller",
+                        action = "control_media",
+                        output = mediaRes.details,
+                        evidence = "AudioManager dispatched media key event: $action",
+                        details = mapOf("action" to action),
+                        errorMessage = mediaRes.error,
+                        verified = mediaRes.success
+                    )
+                }
+                "get_battery", "battery_status" -> {
+                    val bat = deviceStatusProvider.getBatteryStatus()
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "device_status",
+                        action = "get_battery",
+                        output = "Battery level: ${bat.level}% (${bat.statusDescription}, Power Saver: ${if (bat.isPowerSaveMode) "ON" else "OFF"}).",
+                        evidence = "BatteryManager queried directly",
+                        details = mapOf("level" to bat.level.toString(), "charging" to bat.isCharging.toString()),
+                        verified = true
+                    )
+                }
+                "get_network_status", "network_status" -> {
+                    val net = deviceStatusProvider.getNetworkStatus()
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "device_status",
+                        action = "get_network_status",
+                        output = "Network status: ${if (net.isConnected) "Connected (${net.connectionType})" else "Disconnected"} (Wi-Fi hardware enabled: ${net.isWifiEnabled}).",
+                        evidence = "ConnectivityManager queried",
+                        details = mapOf("connected" to net.isConnected.toString(), "type" to net.connectionType),
+                        verified = true
+                    )
+                }
+                "get_device_info", "device_info" -> {
+                    val report = deviceStatusProvider.getDeviceStatus()
+                    val infoText = "Device: ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})\n${report.toSummaryText()}"
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "device_status",
+                        action = "get_device_info",
+                        output = infoText,
+                        evidence = "System telemetry and hardware specs queried",
+                        details = mapOf("model" to Build.MODEL, "androidVersion" to Build.VERSION.RELEASE),
+                        verified = true
+                    )
+                }
+                "get_device_status", "query_battery_status" -> {
+                    val report = deviceStatusProvider.getDeviceStatus()
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "device_status",
+                        action = "get_device_status",
+                        output = report.toSummaryText(),
+                        evidence = "Unified DeviceStatusProvider report compiled",
+                        details = mapOf("activeApp" to report.currentForegroundApp, "battery" to "${report.battery.level}%"),
+                        verified = true
+                    )
+                }
+                "storage_report", "get_storage" -> {
+                    val report = fileAccessManager.getStorageReport()
+                    val text = "Storage: %.1f GB free / %.1f GB total (Used: %.1f GB)\nApp Cache: %d KB | Photos/Images: %d | Audio: %d | Video: %d".format(
+                        report.internalAvailableGb,
+                        report.internalTotalGb,
+                        report.internalUsedGb,
+                        report.appCacheBytes / 1024,
+                        report.mediaCounts["Images"] ?: 0,
+                        report.mediaCounts["Audio"] ?: 0,
+                        report.mediaCounts["Video"] ?: 0
+                    )
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "file_manager",
+                        action = "storage_report",
+                        output = text,
+                        evidence = "Storage StatFs & MediaStore queried",
+                        verified = true
+                    )
+                }
+                "clear_cache" -> {
+                    val freed = fileAccessManager.clearAppCache()
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "file_manager",
+                        action = "clear_cache",
+                        output = "Cleared ${freed / 1024} KB of temporary application cache.",
+                        evidence = "Deleted cacheDir and codeCacheDir files",
+                        verified = true
+                    )
                 }
                 "take_screenshot" -> {
                     takeScreenCapture()
@@ -135,8 +323,17 @@ class ToolRouter(
                     readActiveNotifications()
                 }
                 "open_settings" -> {
-                    val type = args["setting_type"] ?: "general"
-                    openSystemSettings(type)
+                    val type = args["setting_type"] ?: args["target"] ?: "general"
+                    val navRes = settingsNavigator.openSetting(type)
+                    ToolExecutionResult(
+                        success = navRes.success,
+                        tool = "settings_navigator",
+                        action = "open_settings",
+                        output = navRes.message,
+                        evidence = "Settings Intent dispatched: ${navRes.action}",
+                        errorMessage = navRes.error,
+                        verified = navRes.success
+                    )
                 }
                 "search_web" -> {
                     val query = args["query"] ?: ""
@@ -196,19 +393,39 @@ class ToolRouter(
                         details = mapOf("foregroundApp" to current)
                     )
                 }
-                "get_device_status", "query_battery_status" -> {
-                    getDeviceAndBatteryDiagnostics()
-                }
-                "toggle_flashlight" -> {
-                    val state = args["state"]?.toBooleanStrictOrNull() ?: true
-                    setFlashlight(state)
+                "toggle_flashlight", "flashlight" -> {
+                    val stateArg = args["state"]
+                    val torchRes = if (stateArg != null) {
+                        flashlightController.setTorchMode(stateArg.toBooleanStrictOrNull() ?: true)
+                    } else {
+                        flashlightController.toggleTorch()
+                    }
+                    ToolExecutionResult(
+                        success = torchRes.success,
+                        tool = "flashlight",
+                        action = "toggle_flashlight",
+                        output = torchRes.message,
+                        evidence = "CameraManager setTorchMode invoked",
+                        details = mapOf("torchState" to torchRes.isTorchOn.toString()),
+                        errorMessage = torchRes.error,
+                        verified = torchRes.success
+                    )
                 }
                 "clipboard_copy" -> {
                     val text = args["text"] ?: ""
                     copyToClipboard(text)
                 }
-                "security_audit_check" -> {
-                    runSecurityAudit()
+                "security_audit_check", "run_security_audit", "security_audit" -> {
+                    val auditReport = deviceSecurityAudit.runSecurityAudit()
+                    ToolExecutionResult(
+                        success = true,
+                        tool = "security_audit",
+                        action = "run_security_audit",
+                        output = auditReport.toSummaryText(),
+                        evidence = "Audited ${auditReport.totalCapabilitiesAudited} device capabilities. Posture: ${auditReport.posture}",
+                        details = mapOf("posture" to auditReport.posture, "riskScore" to auditReport.overallRiskScore.toString()),
+                        verified = true
+                    )
                 }
                 else -> {
                     ToolExecutionResult(
@@ -229,81 +446,36 @@ class ToolRouter(
                 errorMessage = e.message
             )
         }
-    }
 
-    // ==========================================
-    // Application Management Tools
-    // ==========================================
-
-    private fun openApplication(query: String): ToolExecutionResult {
-        val pm = context.packageManager
-        val lowerQuery = query.lowercase().trim()
-
-        val intentToLaunch: Intent? = when {
-            lowerQuery.contains("whatsapp") || lowerQuery.contains("হোয়াটসঅ্যাপ") -> {
-                pm.getLaunchIntentForPackage("com.whatsapp")
-                    ?: pm.getLaunchIntentForPackage("com.whatsapp.w4b")
-            }
-            lowerQuery.contains("youtube") || lowerQuery.contains("ইউটিউব") -> {
-                pm.getLaunchIntentForPackage("com.google.android.youtube")
-                    ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com"))
-            }
-            lowerQuery.contains("setting") || lowerQuery.contains("সেটিংস") -> {
-                Intent(Settings.ACTION_SETTINGS)
-            }
-            lowerQuery.contains("camera") || lowerQuery.contains("ক্যামেরা") -> {
-                Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
-            }
-            lowerQuery.contains("dial") || lowerQuery.contains("phone") || lowerQuery.contains("ফোন") -> {
-                Intent(Intent.ACTION_DIAL)
-            }
-            lowerQuery.contains("message") || lowerQuery.contains("sms") || lowerQuery.contains("মেসেজ") -> {
-                Intent(Intent.ACTION_MAIN).apply {
-                    addCategory(Intent.CATEGORY_APP_MESSAGING)
-                }
-            }
-            else -> {
-                val installedPackages = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                val matched = installedPackages.firstOrNull { app ->
-                    val label = pm.getApplicationLabel(app).toString().lowercase()
-                    label.contains(lowerQuery) || app.packageName.lowercase().contains(lowerQuery)
-                }
-                matched?.let { pm.getLaunchIntentForPackage(it.packageName) }
-            }
-        }
-
-        return if (intentToLaunch != null) {
-            intentToLaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Record execution to Room device_action_history
+        if (jarvisDao != null) {
             try {
-                context.startActivity(intentToLaunch)
-                ToolExecutionResult(
-                    success = true,
-                    tool = "app_launcher",
-                    action = "open_app",
-                    output = "Opened $query.",
-                    evidence = "Launched intent for package '${intentToLaunch.`package` ?: query}'",
-                    details = mapOf("app" to query),
-                    verified = true
+                val duration = System.currentTimeMillis() - startTime
+                jarvisDao.insertDeviceAction(
+                    DeviceActionHistoryEntity(
+                        toolName = toolResult.tool,
+                        action = toolResult.action,
+                        target = targetPackage,
+                        argumentsJson = toolIntent.arguments.toString(),
+                        success = toolResult.success,
+                        riskLevel = if (toolIntent.riskLevel.isNotBlank()) toolIntent.riskLevel else "LOW",
+                        failureReason = toolResult.errorMessage,
+                        verificationProof = toolResult.evidence ?: toolResult.output,
+                        durationMs = duration,
+                        timestamp = startTime
+                    )
                 )
             } catch (e: Exception) {
-                ToolExecutionResult(
-                    success = false,
-                    tool = "app_launcher",
-                    action = "open_app",
-                    output = "Failed to launch $query: ${e.localizedMessage}",
-                    errorMessage = e.message
-                )
+                // Ignore DB logging failure
             }
-        } else {
-            ToolExecutionResult(
-                success = false,
-                tool = "app_launcher",
-                action = "open_app",
-                output = "Could not find an installed app matching '$query'.",
-                errorMessage = "App '$query' is not installed on this device."
-            )
         }
+
+        toolResult
     }
+
+    // ==========================================
+    // Core Accessibility & Helper Methods
+    // ==========================================
 
     private fun closeCurrentApp(): ToolExecutionResult {
         val ok = JarvisAccessibilityService.pressHome()
@@ -323,10 +495,6 @@ class ToolRouter(
             verified = true
         )
     }
-
-    // ==========================================
-    // Accessibility & Screen Tools (PHASES B - F)
-    // ==========================================
 
     private fun readActiveScreen(): ToolExecutionResult {
         if (!JarvisAccessibilityService.isAccessibilityEnabled(context)) {
@@ -433,49 +601,6 @@ class ToolRouter(
         }
     }
 
-    private suspend fun tapElement(target: String): ToolExecutionResult {
-        if (!JarvisAccessibilityService.isAccessibilityEnabled(context)) {
-            return ToolExecutionResult(
-                success = false,
-                tool = "accessibility_actuator",
-                action = "tap",
-                output = "Accessibility Service is required to perform tap actions.",
-                errorMessage = "Service disabled"
-            )
-        }
-
-        // Try ScreenUnderstandingEngine first for intent and multimodal awareness (e.g. 🔍 icon without text)
-        if (screenEngine != null) {
-            val details = screenEngine.tapElementByIntent(target)
-            if (details.success) {
-                return ToolExecutionResult(
-                    success = true,
-                    tool = "screen_understanding_engine",
-                    action = "tap",
-                    output = "Tapped '$target' via ${details.methodUsed}.",
-                    evidence = details.evidence,
-                    details = mapOf("target" to target, "method" to details.methodUsed),
-                    verified = true
-                )
-            }
-        }
-
-        val details = JarvisAccessibilityService.clickElement(target)
-        return ToolExecutionResult(
-            success = details.success,
-            tool = "accessibility_actuator",
-            action = "tap",
-            output = if (details.success) "Tapped '$target' via ${details.methodUsed}." else "Could not tap '$target'. ${details.evidence}",
-            evidence = details.evidence,
-            errorMessage = details.error,
-            details = mapOf(
-                "target" to target,
-                "method" to details.methodUsed
-            ),
-            verified = details.success
-        )
-    }
-
     private fun longPressElement(target: String): ToolExecutionResult {
         if (!JarvisAccessibilityService.isAccessibilityEnabled(context)) {
             return ToolExecutionResult(
@@ -550,20 +675,6 @@ class ToolRouter(
         )
     }
 
-    private fun typeTextOnScreen(targetField: String?, text: String): ToolExecutionResult {
-        val details = JarvisAccessibilityService.typeText(targetField, text, context)
-        return ToolExecutionResult(
-            success = details.success,
-            tool = "accessibility_actuator",
-            action = "type_text",
-            output = if (details.success) "Entered text \"$text\" via ${details.methodUsed}." else "Typing failed: ${details.evidence}",
-            evidence = details.evidence,
-            errorMessage = details.error,
-            details = mapOf("typedText" to text, "method" to details.methodUsed),
-            verified = details.success
-        )
-    }
-
     private fun takeScreenCapture(): ToolExecutionResult {
         val screen = JarvisAccessibilityService.observeScreen()
         return ToolExecutionResult(
@@ -585,35 +696,6 @@ class ToolRouter(
             evidence = "Notification buffer clear",
             verified = true
         )
-    }
-
-    private fun openSystemSettings(type: String): ToolExecutionResult {
-        val intent = when (type.lowercase()) {
-            "wifi" -> Intent(Settings.ACTION_WIFI_SETTINGS)
-            "bluetooth" -> Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-            "accessibility" -> Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            else -> Intent(Settings.ACTION_SETTINGS)
-        }.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
-
-        return try {
-            context.startActivity(intent)
-            ToolExecutionResult(
-                success = true,
-                tool = "system_settings",
-                action = "open_settings",
-                output = "Opened $type settings.",
-                evidence = "Launched settings intent",
-                verified = true
-            )
-        } catch (e: Exception) {
-            ToolExecutionResult(
-                success = false,
-                tool = "system_settings",
-                action = "open_settings",
-                output = "Could not open settings: ${e.localizedMessage}",
-                errorMessage = e.message
-            )
-        }
     }
 
     // ==========================================
@@ -885,7 +967,6 @@ class ToolRouter(
         val actionResult = if (phoneNumber.length >= 7) {
             whatsAppController.openChatDirect(phoneNumber, message)
         } else {
-            // Open WhatsApp and search contact
             whatsAppController.openWhatsApp()
             whatsAppController.searchAndOpenContact(displayName)
         }
@@ -930,98 +1011,6 @@ class ToolRouter(
         )
     }
 
-    // ==========================================
-    // System & Diagnostics Tools
-    // ==========================================
-
-    private fun getDeviceAndBatteryDiagnostics(): ToolExecutionResult {
-        val ifilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-        val batteryStatus: Intent? = context.registerReceiver(null, ifilter)
-
-        val level: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-        val batteryPct: Float = if (scale > 0) (level * 100 / scale.toFloat()) else 100f
-
-        val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val isCharging: Boolean = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                status == BatteryManager.BATTERY_STATUS_FULL
-
-        val temperature = (batteryStatus?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10.0
-
-        val accessibilityActive = JarvisAccessibilityService.isAccessibilityEnabled(context)
-        val foregroundApp = JarvisAccessibilityService.currentForegroundApp.value
-
-        val output = "Battery: ${batteryPct.toInt()}% | Charging: ${if (isCharging) "Yes" else "No"} | Temp: ${temperature}°C | Active App: $foregroundApp | Accessibility: ${if (accessibilityActive) "Connected" else "Disconnected"}"
-
-        return ToolExecutionResult(
-            success = true,
-            tool = "system_diagnostics",
-            action = "get_device_status",
-            output = output,
-            evidence = "Battery and telemetry sensors queried",
-            details = mapOf(
-                "battery" to "${batteryPct.toInt()}%",
-                "charging" to isCharging.toString(),
-                "temperature" to "${temperature}°C",
-                "activeApp" to foregroundApp,
-                "accessibility" to accessibilityActive.toString()
-            )
-        )
-    }
-
-    private fun setFlashlight(state: Boolean): ToolExecutionResult {
-        return try {
-            val cm = cameraManager ?: return ToolExecutionResult(
-                success = false,
-                tool = "flashlight",
-                action = "toggle",
-                output = "Camera manager unavailable"
-            )
-            val rearCameraId = cm.cameraIdList.firstOrNull { id ->
-                val chars = cm.getCameraCharacteristics(id)
-                val flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-                val facing = chars.get(CameraCharacteristics.LENS_FACING)
-                flashAvailable && facing == CameraCharacteristics.LENS_FACING_BACK
-            } ?: cm.cameraIdList.firstOrNull()
-
-            if (rearCameraId != null) {
-                cm.setTorchMode(rearCameraId, state)
-                ToolExecutionResult(
-                    success = true,
-                    tool = "flashlight",
-                    action = "toggle",
-                    output = "Flashlight turned ${if (state) "ON" else "OFF"}.",
-                    evidence = "CameraManager setTorchMode($rearCameraId, $state) invoked",
-                    details = mapOf("torchState" to state.toString()),
-                    verified = true
-                )
-            } else {
-                ToolExecutionResult(
-                    success = false,
-                    tool = "flashlight",
-                    action = "toggle",
-                    output = "No compatible flash hardware detected on device."
-                )
-            }
-        } catch (e: CameraAccessException) {
-            ToolExecutionResult(
-                success = false,
-                tool = "flashlight",
-                action = "toggle",
-                output = "Camera access error: ${e.localizedMessage}",
-                errorMessage = e.message
-            )
-        } catch (e: Exception) {
-            ToolExecutionResult(
-                success = false,
-                tool = "flashlight",
-                action = "toggle",
-                output = "Flashlight error: ${e.localizedMessage}",
-                errorMessage = e.message
-            )
-        }
-    }
-
     private fun launchWebSearch(query: String): ToolExecutionResult {
         val uri = Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")
         val intent = Intent(Intent.ACTION_VIEW, uri).apply {
@@ -1060,19 +1049,6 @@ class ToolRouter(
             output = "Text copied to clipboard.",
             evidence = "PrimaryClip set with length ${text.length}",
             details = mapOf("copiedText" to text),
-            verified = true
-        )
-    }
-
-    private fun runSecurityAudit(): ToolExecutionResult {
-        val output = "Security Audit:\n• Prompt Injection Shield: ACTIVE\n• On-Device Encrypted Storage: SECURE\n• Hardware Sensor Isolation: VERIFIED\n• Tool Execution Sandbox: ENFORCED\n• High-Risk Confirmation Engine: READY"
-        return ToolExecutionResult(
-            success = true,
-            tool = "security_audit",
-            action = "audit",
-            output = output,
-            evidence = "All 5 security guardrails verified",
-            details = mapOf("auditStatus" to "PASSED", "riskLevel" to "LOW"),
             verified = true
         )
     }

@@ -234,8 +234,91 @@ object ToolDefinitions {
         ToolDefinition(
             name = "toggle_flashlight",
             description = "Turn device rear camera flashlight torch ON or OFF.",
-            parametersSchema = mapOf("state" to "true | false"),
+            parametersSchema = mapOf("state" to "true | false (optional toggle if omitted)"),
             requiredPermissions = listOf("CAMERA"),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "control_volume",
+            description = "Adjust or set device audio volume (VOLUME_UP, VOLUME_DOWN, MUTE, UNMUTE, SET_VOLUME).",
+            parametersSchema = mapOf(
+                "action" to "VOLUME_UP | VOLUME_DOWN | MUTE | UNMUTE | SET_VOLUME",
+                "level" to "Optional target volume integer"
+            ),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "control_media",
+            description = "Control music or media playback (PLAY, PAUSE, PLAY_PAUSE, NEXT, PREVIOUS, STOP).",
+            parametersSchema = mapOf("action" to "PLAY | PAUSE | PLAY_PAUSE | NEXT | PREVIOUS | STOP"),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "get_battery",
+            description = "Query device battery percentage, charging state, and power saver mode.",
+            parametersSchema = emptyMap(),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "get_network_status",
+            description = "Query active network connectivity, type (Wi-Fi, Cellular, Ethernet), and Wi-Fi state.",
+            parametersSchema = emptyMap(),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "get_device_info",
+            description = "Query device hardware specifications, RAM, storage space, Android version, and model name.",
+            parametersSchema = emptyMap(),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "open_app_settings",
+            description = "Open Android application details settings for a given app.",
+            parametersSchema = mapOf("app_name" to "Name or package of the app"),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "list_installed_apps",
+            description = "List all installed applications on the device.",
+            parametersSchema = mapOf("filter" to "Optional name filter (string)"),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "tap_target",
+            description = "Tap or click a semantic UI target (e.g. search, play, send, settings, back, or custom label).",
+            parametersSchema = mapOf("target" to "Semantic target or UI label to tap"),
+            requiredPermissions = listOf("AccessibilityService"),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "go_home",
+            description = "Navigate back to the Android system home screen.",
+            parametersSchema = emptyMap(),
+            requiredPermissions = emptyList(),
+            riskLevel = SkillRiskLevel.LOW,
+            requiresConfirmation = false
+        ),
+        ToolDefinition(
+            name = "go_back",
+            description = "Trigger Android Back navigation.",
+            parametersSchema = emptyMap(),
+            requiredPermissions = emptyList(),
             riskLevel = SkillRiskLevel.LOW,
             requiresConfirmation = false
         ),

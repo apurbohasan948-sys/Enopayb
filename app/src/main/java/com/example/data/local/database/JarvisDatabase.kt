@@ -12,6 +12,9 @@ import com.example.data.local.entity.AppKnowledgeEntity
 import com.example.data.local.entity.AutonomousTaskEntity
 import com.example.data.local.entity.BrainSnapshotEntity
 import com.example.data.local.entity.ChatMessageEntity
+import com.example.data.local.entity.DeviceActionHistoryEntity
+import com.example.data.local.entity.DeviceCapabilityEntity
+import com.example.data.local.entity.AppRegistryEntity
 import com.example.data.local.entity.ExperienceEntity
 import com.example.data.local.entity.GeminiTeacherSessionEntity
 import com.example.data.local.entity.HealthEventEntity
@@ -60,9 +63,12 @@ import kotlinx.coroutines.launch
         KnowledgeItemEntity::class,
         AppKnowledgeEntity::class,
         KnowledgeGraphLinkEntity::class,
-        BrainSnapshotEntity::class
+        BrainSnapshotEntity::class,
+        DeviceCapabilityEntity::class,
+        AppRegistryEntity::class,
+        DeviceActionHistoryEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -403,6 +409,59 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS device_capabilities (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        available INTEGER NOT NULL,
+                        permission TEXT NOT NULL,
+                        enabled INTEGER NOT NULL,
+                        restricted INTEGER NOT NULL,
+                        reason TEXT NOT NULL,
+                        lastChecked INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_registry (
+                        packageName TEXT PRIMARY KEY NOT NULL,
+                        applicationLabel TEXT NOT NULL,
+                        versionName TEXT NOT NULL,
+                        versionCode INTEGER NOT NULL,
+                        isSystemApp INTEGER NOT NULL,
+                        launchIntentAvailable INTEGER NOT NULL,
+                        category TEXT NOT NULL,
+                        lastScannedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS device_action_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        toolName TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        target TEXT NOT NULL,
+                        argumentsJson TEXT NOT NULL,
+                        success INTEGER NOT NULL,
+                        riskLevel TEXT NOT NULL,
+                        failureReason TEXT,
+                        verificationProof TEXT,
+                        durationMs INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context, scope: CoroutineScope): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 try {
@@ -411,7 +470,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                         JarvisDatabase::class.java,
                         "jarvis_brain.db"
                     )
-                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                         .addCallback(JarvisDatabaseCallback(scope))
                         .build()
                     INSTANCE = instance
@@ -424,7 +483,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                         JarvisDatabase::class.java,
                         "jarvis_brain.db"
                     )
-                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                         .build()
                     INSTANCE = fallback
                     fallback
