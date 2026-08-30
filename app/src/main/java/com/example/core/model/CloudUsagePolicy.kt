@@ -13,11 +13,21 @@ data class CloudPolicyConfig(
     val isWifiOnly: Boolean = false,
     val dailyRequestLimit: Int = 100,
     val requestsUsedToday: Int = 0,
+    val webResearchUsedToday: Int = 0,
+    val localRetrievalsCount: Int = 0,
     val maxResponseTokens: Int = 1024,
     val isVisionAllowed: Boolean = true,
     val isBackgroundGeminiAllowed: Boolean = false,
     val isRateLimited: Boolean = false,
     val rateLimitResetTimestamp: Long = 0L
+)
+
+data class CloudUsageStats(
+    val requestsUsedToday: Int,
+    val webResearchRequests: Int,
+    val localRetrievalsCount: Int,
+    val cloudCallsRemaining: Int,
+    val localRetrievalRatio: Float
 )
 
 /**
@@ -33,6 +43,38 @@ class CloudUsagePolicy(private val context: Context) {
     val policy: StateFlow<CloudPolicyConfig> = _policy.asStateFlow()
 
     private var lastRecordedDay: Int = Calendar.getInstance().get(Calendar.DAY_OF_YEAR)
+
+    fun canMakeCloudCall(): Boolean {
+        return isCloudRequestPermitted().first
+    }
+
+    fun getStats(): CloudUsageStats {
+        val current = _policy.value
+        val totalQueries = current.requestsUsedToday + current.localRetrievalsCount
+        val localRatio = if (totalQueries > 0) current.localRetrievalsCount.toFloat() / totalQueries else 1.0f
+        val remaining = (current.dailyRequestLimit - current.requestsUsedToday).coerceAtLeast(0)
+        return CloudUsageStats(
+            requestsUsedToday = current.requestsUsedToday,
+            webResearchRequests = current.webResearchUsedToday,
+            localRetrievalsCount = current.localRetrievalsCount,
+            cloudCallsRemaining = remaining,
+            localRetrievalRatio = localRatio
+        )
+    }
+
+    fun recordWebResearchRequest() {
+        checkAndResetDailyUsage()
+        val current = _policy.value
+        val updated = current.copy(webResearchUsedToday = current.webResearchUsedToday + 1)
+        _policy.value = updated
+        savePolicy(updated)
+    }
+
+    fun recordLocalRetrieval() {
+        val current = _policy.value
+        val updated = current.copy(localRetrievalsCount = current.localRetrievalsCount + 1)
+        _policy.value = updated
+    }
 
     fun updatePolicy(
         isGeminiEnabled: Boolean = _policy.value.isGeminiEnabled,

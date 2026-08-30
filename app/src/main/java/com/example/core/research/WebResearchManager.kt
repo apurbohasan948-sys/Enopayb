@@ -1,8 +1,12 @@
 package com.example.core.research
 
 import com.example.core.autonomy.MasterStopManager
+import com.example.core.knowledge.IngestionCandidate
+import com.example.core.knowledge.KnowledgeIngestionEngine
 import com.example.core.model.GeminiModelProvider
+import com.example.core.security.PrivacyFilter
 import com.example.data.local.dao.JarvisDao
+import com.example.data.local.entity.KnowledgeSourceType
 import com.example.data.local.entity.ResearchStatus
 import com.example.data.local.entity.WebResearchRecordEntity
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +31,9 @@ class WebResearchManager(
     private val dao: JarvisDao,
     private val searchEngine: WebSearchEngine,
     private val knowledgeUpdateManager: KnowledgeUpdateManager,
-    private val geminiProvider: GeminiModelProvider? = null
+    private val geminiProvider: GeminiModelProvider? = null,
+    private val ingestionEngine: KnowledgeIngestionEngine? = null,
+    private val researchPolicy: ResearchPolicy = ResearchPolicy()
 ) {
     val allResearchRecords: Flow<List<WebResearchRecordEntity>> = dao.getAllWebResearchRecords()
 
@@ -119,11 +125,12 @@ class WebResearchManager(
 
         if (geminiProvider?.isConfigured() == true) {
             val contextText = findings.joinToString("\n- ")
+            val sanitizedContext = PrivacyFilter.sanitizeForCloud(contextText).sanitizedText
             val prompt = """
                 You are JARVIS Web Research Agent.
                 Goal: $userGoal
                 Verified Sources:
-                - $contextText
+                - $sanitizedContext
                 
                 Provide a structured, factual, and verified summary of these findings. 
                 Include key facts, numbers/dates if any, and note the primary source.
@@ -144,6 +151,20 @@ class WebResearchManager(
         var stored = false
         if (storeInKnowledgeBase && synthesizedSummary.isNotBlank()) {
             val knowledgeKey = query.lowercase().replace(Regex("[^a-z0-9]"), "_").take(40)
+            
+            // Ingest into Phase 14 Knowledge Ingestion Engine if available
+            ingestionEngine?.ingest(
+                IngestionCandidate(
+                    title = query,
+                    content = synthesizedSummary,
+                    summary = synthesizedSummary.take(150),
+                    sourceType = if (primarySource?.isOfficialSource == true) KnowledgeSourceType.OFFICIAL_DOCUMENTATION else KnowledgeSourceType.TRUSTED_WEBSITE,
+                    sourceUrl = primarySource?.url,
+                    tags = "web_research"
+                )
+            )
+
+            // Also propose to KnowledgeUpdateManager for backward compatibility
             knowledgeUpdateManager.proposeUpdate(
                 KnowledgeUpdateProposal(
                     knowledgeKey = knowledgeKey,

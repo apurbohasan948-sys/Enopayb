@@ -127,6 +127,32 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val modelProviderManager = com.example.core.model.ModelProviderManager(application, preferences)
     val localKnowledgeRetriever = com.example.core.rag.LocalKnowledgeRetriever(database.jarvisDao())
 
+    // Phase 14: Long-Term Brain / Knowledge Growth Engine
+    val knowledgeSourceManager = com.example.core.knowledge.KnowledgeSourceManager(database.jarvisDao())
+    val knowledgeValidator = com.example.core.knowledge.KnowledgeValidator(SecurityPolicyEngine)
+    val knowledgeIngestionEngine = com.example.core.knowledge.KnowledgeIngestionEngine(
+        database.jarvisDao(),
+        knowledgeSourceManager,
+        knowledgeValidator
+    )
+    val appKnowledgeManager = com.example.core.knowledge.AppKnowledgeManager(database.jarvisDao())
+    val knowledgeGraph = com.example.core.knowledge.KnowledgeGraph(database.jarvisDao())
+    val selfImprovementGuard = com.example.core.knowledge.SelfImprovementGuard(SecurityPolicyEngine)
+    val researchPolicy = com.example.core.research.ResearchPolicy()
+    val brainStorageManager = com.example.core.brain.BrainStorageManager(database.jarvisDao())
+    val phase14BackupManager = com.example.core.brain.BrainBackupManager(
+        database.jarvisDao(),
+        knowledgeIngestionEngine
+    )
+    val knowledgeTeachingLoop = com.example.core.knowledge.KnowledgeTeachingLoop(
+        database.jarvisDao(),
+        localKnowledgeRetriever,
+        knowledgeIngestionEngine,
+        researchPolicy,
+        cloudUsagePolicy,
+        SecurityPolicyEngine
+    )
+
     val voiceManager = VoiceManager(application)
     val capabilityManager = com.example.core.capability.CapabilityManager(application)
 
@@ -247,6 +273,22 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     val allHealthEvents: StateFlow<List<HealthEventEntity>> = database.jarvisDao().getAllHealthEvents()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Phase 14: Long-Term Brain State Streams
+    val allKnowledgeSources: StateFlow<List<com.example.data.local.entity.KnowledgeSourceEntity>> = knowledgeSourceManager.allSources
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allKnowledgeItems: StateFlow<List<com.example.data.local.entity.KnowledgeItemEntity>> = database.jarvisDao().getAllKnowledgeItems()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allAppKnowledge: StateFlow<List<com.example.data.local.entity.AppKnowledgeEntity>> = appKnowledgeManager.allAppKnowledge
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allBrainSnapshots: StateFlow<List<com.example.data.local.entity.BrainSnapshotEntity>> = database.jarvisDao().getAllBrainSnapshots()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _brainStorageStats = MutableStateFlow<com.example.core.brain.BrainStorageStats?>(null)
+    val brainStorageStats: StateFlow<com.example.core.brain.BrainStorageStats?> = _brainStorageStats.asStateFlow()
 
     val systemHealthReport: StateFlow<SystemHealthReport> = autonomousAgentManager.healthMonitor.healthReport
     val resourceSnapshot: StateFlow<ResourceSnapshot> = autonomousAgentManager.resourceManager.currentSnapshot
@@ -1739,5 +1781,58 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setResourceMode(mode: ResourceMode) {
         autonomousAgentManager.resourceManager.setResourceMode(mode)
+    }
+
+    // Phase 14: Long-Term Brain Actions
+    fun refreshBrainStorageStats() {
+        viewModelScope.launch {
+            _brainStorageStats.value = brainStorageManager.getStorageStats()
+        }
+    }
+
+    fun ingestNewKnowledge(
+        candidate: com.example.core.knowledge.IngestionCandidate,
+        onResult: (com.example.core.knowledge.IngestionResult) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val result = knowledgeIngestionEngine.ingest(candidate)
+            onResult(result)
+            refreshBrainStorageStats()
+        }
+    }
+
+    fun exportPhase14BrainSnapshot(onResult: (com.example.core.brain.BackupExportResult) -> Unit) {
+        viewModelScope.launch {
+            val result = phase14BackupManager.createBrainExport()
+            onResult(result)
+        }
+    }
+
+    fun importPhase14BrainSnapshot(json: String, onResult: (com.example.core.brain.BackupImportResult) -> Unit) {
+        viewModelScope.launch {
+            val result = phase14BackupManager.importBrain(json)
+            onResult(result)
+            refreshBrainStorageStats()
+        }
+    }
+
+    fun compactBrainStorage() {
+        viewModelScope.launch {
+            val stats = brainStorageManager.compactBrain()
+            _brainStorageStats.value = stats
+        }
+    }
+
+    fun flagKnowledgeSource(sourceId: String) {
+        viewModelScope.launch {
+            knowledgeSourceManager.flagSource(sourceId)
+        }
+    }
+
+    fun deleteKnowledgeItem(item: com.example.data.local.entity.KnowledgeItemEntity) {
+        viewModelScope.launch {
+            database.jarvisDao().deleteKnowledgeItem(item)
+            refreshBrainStorageStats()
+        }
     }
 }

@@ -32,6 +32,9 @@ interface JarvisDao {
     @Query("SELECT * FROM memories WHERE category = :category ORDER BY updatedAt DESC")
     fun getMemoriesByCategory(category: MemoryCategory): Flow<List<MemoryEntity>>
 
+    @Query("SELECT * FROM memories WHERE `key` = :key LIMIT 1")
+    suspend fun getMemoryByKey(key: String): MemoryEntity?
+
     @Query("SELECT * FROM memories WHERE `key` LIKE '%' || :query || '%' OR `value` LIKE '%' || :query || '%'")
     suspend fun searchMemories(query: String): List<MemoryEntity>
 
@@ -65,6 +68,9 @@ interface JarvisDao {
 
     @Query("SELECT * FROM experiences ORDER BY timestamp DESC")
     suspend fun getAllExperiencesList(): List<ExperienceEntity>
+
+    @Query("SELECT * FROM experiences ORDER BY timestamp DESC")
+    suspend fun getAllExperiencesSync(): List<ExperienceEntity>
 
     @Query("SELECT * FROM experiences WHERE isSuccess = 1 ORDER BY timestamp DESC")
     fun getSuccessfulExperiences(): Flow<List<ExperienceEntity>>
@@ -105,6 +111,9 @@ interface JarvisDao {
 
     @Query("SELECT * FROM skills WHERE name = :name LIMIT 1")
     suspend fun getSkillByName(name: String): SkillEntity?
+
+    @Query("SELECT * FROM skills WHERE id = :id LIMIT 1")
+    suspend fun getSkillById(id: Long): SkillEntity?
 
     @Query("SELECT * FROM skills WHERE name LIKE '%' || :query || '%' OR description LIKE '%' || :query || '%'")
     suspend fun searchSkills(query: String): List<SkillEntity>
@@ -339,4 +348,126 @@ interface JarvisDao {
 
     @Query("DELETE FROM web_research_records")
     suspend fun clearAllWebResearchRecords()
+
+    // === KNOWLEDGE SOURCES ===
+    @Query("SELECT * FROM knowledge_sources ORDER BY retrievedAt DESC")
+    fun getAllKnowledgeSources(): Flow<List<com.example.data.local.entity.KnowledgeSourceEntity>>
+
+    @Query("SELECT * FROM knowledge_sources ORDER BY retrievedAt DESC")
+    suspend fun getAllKnowledgeSourcesSync(): List<com.example.data.local.entity.KnowledgeSourceEntity>
+
+    @Query("SELECT * FROM knowledge_sources WHERE sourceId = :id LIMIT 1")
+    suspend fun getKnowledgeSourceById(id: String): com.example.data.local.entity.KnowledgeSourceEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertKnowledgeSource(source: com.example.data.local.entity.KnowledgeSourceEntity): Long
+
+    @Update
+    suspend fun updateKnowledgeSource(source: com.example.data.local.entity.KnowledgeSourceEntity)
+
+    @Delete
+    suspend fun deleteKnowledgeSource(source: com.example.data.local.entity.KnowledgeSourceEntity)
+
+    @Query("DELETE FROM knowledge_sources")
+    suspend fun clearAllKnowledgeSources()
+
+    // === KNOWLEDGE ITEMS ===
+    @Query("SELECT * FROM knowledge_items ORDER BY updatedAt DESC")
+    fun getAllKnowledgeItems(): Flow<List<com.example.data.local.entity.KnowledgeItemEntity>>
+
+    @Query("SELECT * FROM knowledge_items ORDER BY updatedAt DESC")
+    suspend fun getAllKnowledgeItemsSync(): List<com.example.data.local.entity.KnowledgeItemEntity>
+
+    @Query("SELECT * FROM knowledge_items WHERE knowledgeKey = :key LIMIT 1")
+    suspend fun getKnowledgeItemByKey(key: String): com.example.data.local.entity.KnowledgeItemEntity?
+
+    @Query("SELECT * FROM knowledge_items WHERE contentHash = :hash LIMIT 1")
+    suspend fun getKnowledgeItemByHash(hash: String): com.example.data.local.entity.KnowledgeItemEntity?
+
+    @Query("SELECT * FROM knowledge_items WHERE title LIKE '%' || :query || '%' OR content LIKE '%' || :query || '%' OR tags LIKE '%' || :query || '%' OR summary LIKE '%' || :query || '%'")
+    suspend fun searchKnowledgeItems(query: String): List<com.example.data.local.entity.KnowledgeItemEntity>
+
+    @Query("SELECT * FROM knowledge_items WHERE knowledgeType = :type ORDER BY confidence DESC")
+    fun getKnowledgeItemsByType(type: com.example.data.local.entity.KnowledgeType): Flow<List<com.example.data.local.entity.KnowledgeItemEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertKnowledgeItem(item: com.example.data.local.entity.KnowledgeItemEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertKnowledgeItems(items: List<com.example.data.local.entity.KnowledgeItemEntity>)
+
+    @Update
+    suspend fun updateKnowledgeItem(item: com.example.data.local.entity.KnowledgeItemEntity)
+
+    @Delete
+    suspend fun deleteKnowledgeItem(item: com.example.data.local.entity.KnowledgeItemEntity)
+
+    @Query("DELETE FROM knowledge_items")
+    suspend fun clearAllKnowledgeItems()
+
+    @Query("UPDATE knowledge_items SET usageCount = usageCount + 1, lastVerified = :timestamp, confidence = MIN(1.0, confidence + 0.02) WHERE id = :id")
+    suspend fun incrementKnowledgeUsage(id: Long, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE knowledge_items SET failureCount = failureCount + 1, confidence = MAX(0.1, confidence - 0.1), isUncertain = CASE WHEN failureCount >= 2 THEN 1 ELSE isUncertain END WHERE id = :id")
+    suspend fun recordKnowledgeFailure(id: Long)
+
+    // === APP KNOWLEDGE ===
+    @Query("SELECT * FROM app_knowledge ORDER BY updatedAt DESC")
+    fun getAllAppKnowledge(): Flow<List<com.example.data.local.entity.AppKnowledgeEntity>>
+
+    @Query("SELECT * FROM app_knowledge ORDER BY updatedAt DESC")
+    suspend fun getAllAppKnowledgeSync(): List<com.example.data.local.entity.AppKnowledgeEntity>
+
+    @Query("SELECT * FROM app_knowledge WHERE packageName = :packageName LIMIT 1")
+    suspend fun getAppKnowledgeByPackage(packageName: String): com.example.data.local.entity.AppKnowledgeEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAppKnowledge(appKnowledge: com.example.data.local.entity.AppKnowledgeEntity): Long
+
+    @Update
+    suspend fun updateAppKnowledge(appKnowledge: com.example.data.local.entity.AppKnowledgeEntity)
+
+    @Delete
+    suspend fun deleteAppKnowledge(appKnowledge: com.example.data.local.entity.AppKnowledgeEntity)
+
+    @Query("DELETE FROM app_knowledge")
+    suspend fun clearAllAppKnowledge()
+
+    // === KNOWLEDGE GRAPH LINKS ===
+    @Query("SELECT * FROM knowledge_graph_links ORDER BY createdAt DESC")
+    fun getAllGraphLinks(): Flow<List<com.example.data.local.entity.KnowledgeGraphLinkEntity>>
+
+    @Query("SELECT * FROM knowledge_graph_links WHERE fromType = :fromType AND fromId = :fromId")
+    suspend fun getGraphLinksFrom(fromType: String, fromId: String): List<com.example.data.local.entity.KnowledgeGraphLinkEntity>
+
+    @Query("SELECT * FROM knowledge_graph_links WHERE toType = :toType AND toId = :toId")
+    suspend fun getGraphLinksTo(toType: String, toId: String): List<com.example.data.local.entity.KnowledgeGraphLinkEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGraphLink(link: com.example.data.local.entity.KnowledgeGraphLinkEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGraphLinks(links: List<com.example.data.local.entity.KnowledgeGraphLinkEntity>)
+
+    @Delete
+    suspend fun deleteGraphLink(link: com.example.data.local.entity.KnowledgeGraphLinkEntity)
+
+    @Query("DELETE FROM knowledge_graph_links")
+    suspend fun clearAllGraphLinks()
+
+    // === BRAIN SNAPSHOTS ===
+    @Query("SELECT * FROM brain_snapshots ORDER BY createdAt DESC")
+    fun getAllBrainSnapshots(): Flow<List<com.example.data.local.entity.BrainSnapshotEntity>>
+
+    @Query("SELECT * FROM brain_snapshots ORDER BY createdAt DESC LIMIT 1")
+    suspend fun getLatestBrainSnapshot(): com.example.data.local.entity.BrainSnapshotEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBrainSnapshot(snapshot: com.example.data.local.entity.BrainSnapshotEntity): Long
+
+    @Delete
+    suspend fun deleteBrainSnapshot(snapshot: com.example.data.local.entity.BrainSnapshotEntity)
+
+    @Query("DELETE FROM brain_snapshots")
+    suspend fun clearAllBrainSnapshots()
 }

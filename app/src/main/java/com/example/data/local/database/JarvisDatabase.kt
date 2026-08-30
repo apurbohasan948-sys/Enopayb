@@ -8,12 +8,19 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.local.dao.JarvisDao
+import com.example.data.local.entity.AppKnowledgeEntity
 import com.example.data.local.entity.AutonomousTaskEntity
+import com.example.data.local.entity.BrainSnapshotEntity
 import com.example.data.local.entity.ChatMessageEntity
 import com.example.data.local.entity.ExperienceEntity
 import com.example.data.local.entity.GeminiTeacherSessionEntity
 import com.example.data.local.entity.HealthEventEntity
 import com.example.data.local.entity.KnowledgeChunkEntity
+import com.example.data.local.entity.KnowledgeGraphLinkEntity
+import com.example.data.local.entity.KnowledgeItemEntity
+import com.example.data.local.entity.KnowledgeSourceEntity
+import com.example.data.local.entity.KnowledgeSourceType
+import com.example.data.local.entity.KnowledgeType
 import com.example.data.local.entity.KnowledgeVersionEntity
 import com.example.data.local.entity.MemoryCategory
 import com.example.data.local.entity.MemoryEntity
@@ -22,8 +29,10 @@ import com.example.data.local.entity.SecurityEventEntity
 import com.example.data.local.entity.SkillEntity
 import com.example.data.local.entity.SkillRiskLevel
 import com.example.data.local.entity.SkillSource
+import com.example.data.local.entity.SourceStatus
 import com.example.data.local.entity.TrainingExampleEntity
 import com.example.data.local.entity.UserCorrectionEntity
+import com.example.data.local.entity.ValidationStage
 import com.example.data.local.entity.VisualExperienceEntity
 import com.example.data.local.entity.WebResearchRecordEntity
 import kotlinx.coroutines.CoroutineScope
@@ -46,9 +55,14 @@ import kotlinx.coroutines.launch
         AutonomousTaskEntity::class,
         KnowledgeVersionEntity::class,
         HealthEventEntity::class,
-        WebResearchRecordEntity::class
+        WebResearchRecordEntity::class,
+        KnowledgeSourceEntity::class,
+        KnowledgeItemEntity::class,
+        AppKnowledgeEntity::class,
+        KnowledgeGraphLinkEntity::class,
+        BrainSnapshotEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -288,6 +302,107 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS knowledge_sources (
+                        sourceId TEXT PRIMARY KEY NOT NULL,
+                        sourceType TEXT NOT NULL,
+                        sourceUrl TEXT,
+                        title TEXT NOT NULL,
+                        retrievedAt INTEGER NOT NULL,
+                        contentHash TEXT NOT NULL,
+                        trustScore REAL NOT NULL,
+                        lastVerified INTEGER NOT NULL,
+                        status TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS knowledge_items (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        knowledgeKey TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        summary TEXT NOT NULL,
+                        knowledgeType TEXT NOT NULL,
+                        validationStage TEXT NOT NULL,
+                        confidence REAL NOT NULL,
+                        trustScore REAL NOT NULL,
+                        sourceCount INTEGER NOT NULL,
+                        usageCount INTEGER NOT NULL,
+                        failureCount INTEGER NOT NULL,
+                        sourceId TEXT,
+                        sourceUrl TEXT,
+                        contentHash TEXT NOT NULL,
+                        tags TEXT NOT NULL,
+                        appPackage TEXT,
+                        appVersion TEXT,
+                        osVersion TEXT,
+                        expiryPolicy TEXT NOT NULL,
+                        lastVerified INTEGER NOT NULL,
+                        isStale INTEGER NOT NULL,
+                        isUncertain INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_knowledge (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        appName TEXT NOT NULL,
+                        packageName TEXT NOT NULL,
+                        version TEXT NOT NULL,
+                        knownScreensJson TEXT NOT NULL,
+                        semanticTargetsJson TEXT NOT NULL,
+                        commonActionsJson TEXT NOT NULL,
+                        successfulSkillsJson TEXT NOT NULL,
+                        failedStrategiesJson TEXT NOT NULL,
+                        recoveryStrategiesJson TEXT NOT NULL,
+                        lastVerified INTEGER NOT NULL,
+                        isStale INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS knowledge_graph_links (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        fromType TEXT NOT NULL,
+                        fromId TEXT NOT NULL,
+                        relation TEXT NOT NULL,
+                        toType TEXT NOT NULL,
+                        toId TEXT NOT NULL,
+                        weight REAL NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS brain_snapshots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        snapshotVersion TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        deviceProfile TEXT NOT NULL,
+                        summaryJson TEXT NOT NULL,
+                        exportedJson TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context, scope: CoroutineScope): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 try {
@@ -296,7 +411,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                         JarvisDatabase::class.java,
                         "jarvis_brain.db"
                     )
-                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                         .addCallback(JarvisDatabaseCallback(scope))
                         .build()
                     INSTANCE = instance
@@ -309,7 +424,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                         JarvisDatabase::class.java,
                         "jarvis_brain.db"
                     )
-                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                         .build()
                     INSTANCE = fallback
                     fallback
@@ -556,6 +671,78 @@ abstract class JarvisDatabase : RoomDatabase() {
                 )
             )
             dao.insertKnowledgeChunks(initialKnowledge)
+
+            // Seed Phase 14 Verified Knowledge Items & Sources
+            val initialSource = KnowledgeSourceEntity(
+                sourceId = "src_core_system",
+                sourceType = KnowledgeSourceType.OFFICIAL_DOCUMENTATION,
+                sourceUrl = "https://developer.android.com",
+                title = "Android Architecture & System Guidelines",
+                retrievedAt = System.currentTimeMillis(),
+                contentHash = "hash_android_core",
+                trustScore = 1.0f,
+                status = SourceStatus.ACTIVE
+            )
+            dao.insertKnowledgeSource(initialSource)
+
+            val initialKnowledgeItems = listOf(
+                KnowledgeItemEntity(
+                    knowledgeKey = "hardware_redmi_note_12",
+                    title = "Redmi Note 12 Architecture",
+                    content = "Snapdragon 685 octa-core CPU. Recommended local model: Qwen2.5-0.5B to 1.5B GGUF Q4_K_M. Max safe RAM 1.2GB.",
+                    summary = "Hardware specifications and local AI constraints for Redmi Note 12.",
+                    knowledgeType = KnowledgeType.DEVICE_KNOWLEDGE,
+                    validationStage = ValidationStage.ACTIVE,
+                    confidence = 0.98f,
+                    trustScore = 1.0f,
+                    sourceId = "src_core_system",
+                    contentHash = "hash_redmi_12",
+                    tags = "hardware, redmi, local-llm"
+                ),
+                KnowledgeItemEntity(
+                    knowledgeKey = "android_15_security",
+                    title = "Android 15 Foreground Service Policies",
+                    content = "Microphone and camera access require foreground service type declaration and active system notification with privacy indicator.",
+                    summary = "Android 15 background permission constraints.",
+                    knowledgeType = KnowledgeType.SYSTEM_KNOWLEDGE,
+                    validationStage = ValidationStage.ACTIVE,
+                    confidence = 0.99f,
+                    trustScore = 1.0f,
+                    sourceId = "src_core_system",
+                    contentHash = "hash_android_15_sec",
+                    tags = "security, android15, permissions"
+                ),
+                KnowledgeItemEntity(
+                    knowledgeKey = "whatsapp_ui_actions",
+                    title = "WhatsApp Semantic Navigation Pattern",
+                    content = "To send message: Launch package com.whatsapp -> locate Contact Search or FAB -> enter contact query -> click chat -> enter text -> click Send button.",
+                    summary = "Standard procedure for sending WhatsApp messages.",
+                    knowledgeType = KnowledgeType.APP_BEHAVIOR,
+                    validationStage = ValidationStage.ACTIVE,
+                    confidence = 0.96f,
+                    trustScore = 0.95f,
+                    sourceId = "src_core_system",
+                    contentHash = "hash_whatsapp_pattern",
+                    tags = "whatsapp, ui, procedure",
+                    appPackage = "com.whatsapp"
+                )
+            )
+            dao.insertKnowledgeItems(initialKnowledgeItems)
+
+            val initialAppKnowledge = AppKnowledgeEntity(
+                appName = "WhatsApp",
+                packageName = "com.whatsapp",
+                version = "2.24",
+                knownScreensJson = "[\"ChatListScreen\", \"ConversationScreen\", \"ContactPickerScreen\"]",
+                semanticTargetsJson = "[\"Search\", \"New Chat\", \"Message Input Box\", \"Send Button\"]",
+                commonActionsJson = "[\"send_message\", \"make_call\", \"view_status\"]",
+                successfulSkillsJson = "[\"send_whatsapp_message\", \"find_contact\"]",
+                failedStrategiesJson = "[]",
+                recoveryStrategiesJson = "[\"If input unfocused, tap input field first\", \"If contact not in list, search phonebook\"]",
+                lastVerified = System.currentTimeMillis(),
+                isStale = false
+            )
+            dao.insertAppKnowledge(initialAppKnowledge)
 
             // Seed Initial System Security Baseline Event
             dao.insertSecurityEvent(
