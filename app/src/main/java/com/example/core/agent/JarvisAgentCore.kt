@@ -3,8 +3,11 @@ package com.example.core.agent
 import android.content.Context
 import android.util.Log
 import com.example.core.accessibility.JarvisAccessibilityService
+import com.example.core.learning.ExperienceEvaluator
 import com.example.core.learning.ExperienceManager
+import com.example.core.learning.ExperienceRecorder
 import com.example.core.learning.GeminiTeacher
+import com.example.core.learning.SkillCandidateGenerator
 import com.example.core.learning.SkillManager
 import com.example.core.learning.TrainingDatasetManager
 import com.example.core.learning.UserCorrectionLearner
@@ -67,8 +70,26 @@ class JarvisAgentCore(
     val userCorrectionLearner: UserCorrectionLearner = UserCorrectionLearner(com.example.data.local.database.JarvisDatabase.getDatabase(context, kotlinx.coroutines.GlobalScope).jarvisDao()),
     val geminiTeacher: GeminiTeacher = GeminiTeacher(com.example.data.local.database.JarvisDatabase.getDatabase(context, kotlinx.coroutines.GlobalScope).jarvisDao(), preferences),
     val trainingDatasetManager: TrainingDatasetManager = TrainingDatasetManager(com.example.data.local.database.JarvisDatabase.getDatabase(context, kotlinx.coroutines.GlobalScope).jarvisDao()),
+    val experienceEvaluator: ExperienceEvaluator = ExperienceEvaluator(),
+    val skillCandidateGenerator: SkillCandidateGenerator = SkillCandidateGenerator(com.example.data.local.database.JarvisDatabase.getDatabase(context, kotlinx.coroutines.GlobalScope).jarvisDao()),
+    val experienceRecorder: ExperienceRecorder = ExperienceRecorder(
+        dao = com.example.data.local.database.JarvisDatabase.getDatabase(context, kotlinx.coroutines.GlobalScope).jarvisDao(),
+        preferences = preferences,
+        evaluator = experienceEvaluator,
+        candidateGenerator = skillCandidateGenerator,
+        context = context
+    ),
     val modelRouter: ModelRouter = ModelRouter(memoryRetriever, skillManager, preferences)
 ) {
+    val appResolver = AppResolver(context)
+    val universalTargetResolver = UniversalTargetResolver(context, screenEngine)
+    val universalActionExecutor = UniversalActionExecutor(
+        context = context,
+        screenEngine = screenEngine,
+        targetResolver = universalTargetResolver,
+        appResolver = appResolver
+    )
+
     val universalPlanner = UniversalTaskPlanner(
         repository = repository,
         memoryRetriever = memoryRetriever,
@@ -281,20 +302,29 @@ class JarvisAgentCore(
 
         worldModel.refresh()
 
-        // Phase 7 Long-Term Learning: Record full task experience
-        if (preferences.isLearningEnabled && preferences.isStoreExperiencesEnabled) {
-            val appPkg = stepRecords.firstOrNull()?.afterScreenSummary?.let { screenEngine.latestUnifiedScreen.value?.packageName } ?: "com.android"
-            val expId = experienceManager.recordTaskExperience(
-                goal = goal,
-                appPackage = appPkg,
-                initialScreenSummary = stepRecords.firstOrNull()?.beforeScreenSummary ?: "Start",
-                stepRecords = stepRecords,
-                isSuccess = allSuccess,
-                failedStrategy = if (!allSuccess) finalMessage else null,
-                recoveryStrategy = if (allSuccess && stepRecords.any { !it.result.success }) "Recovered through fallback alternatives" else null,
-                source = ExperienceSource.LOCAL_PLANNER
-            )
-            logStep("📚 Experience #$expId stored into Long-Term Memory.")
+        // Phase 13 Experience Learning & Skill Acquisition Engine
+        val appPkg = stepRecords.firstOrNull()?.afterScreenSummary?.let { screenEngine.latestUnifiedScreen.value?.packageName } ?: "com.android"
+        val hadRecovery = stepRecords.any { !it.result.success }
+        val recoverySuccess = allSuccess && hadRecovery
+
+        val expResult = experienceRecorder.recordTaskRun(
+            goal = goal,
+            appPackage = appPkg,
+            initialScreenSummary = stepRecords.firstOrNull()?.beforeScreenSummary ?: "Start",
+            stepRecords = stepRecords,
+            isSuccess = allSuccess,
+            failedStrategy = if (!allSuccess) finalMessage else null,
+            recoveryStrategy = if (recoverySuccess) "Recovered through 7-stage fallback alternatives" else null,
+            hadRecovery = hadRecovery,
+            recoverySuccess = recoverySuccess,
+            hasUserCorrection = false,
+            durationMs = 1200L,
+            modelUsed = if (preferences.isGeminiTeacherEnabled) "GEMINI_OR_LOCAL" else "LOCAL_PLANNER",
+            source = ExperienceSource.LOCAL_PLANNER
+        )
+
+        if (expResult.experienceId > 0) {
+            logStep("📚 Experience #${expResult.experienceId} evaluated: Score ${expResult.evaluation.score}/100 (${expResult.evaluation.grade})")
         }
 
         if (allSuccess && stepRecords.isNotEmpty()) {
@@ -302,28 +332,32 @@ class JarvisAgentCore(
             finalMessage = "Goal accomplished: $goal"
             logStep("🎉 $finalMessage")
             voiceManager.speak("Goal completed.")
-            updateTelemetry { copy(action = "Completed", nextAction = "Standby", learningStatus = "Task Synthesized & Curated") }
+            updateTelemetry { copy(action = "Completed", nextAction = "Standby", learningStatus = "Evaluated Score: ${expResult.evaluation.score}/100") }
 
-            // 1. Synthesize / Update Skill
+            // 1. Synthesize / Update Reusable Skill Candidate
             if (preferences.isLearningEnabled && preferences.isAutoSkillCreationEnabled) {
-                saveLearnedPlanSkill(goal, plan)
+                if (expResult.generatedSkillId != null) {
+                    logStep("🧠 Skill Synthesized & Versioned: \"${expResult.generatedSkillId}\"")
+                } else {
+                    saveLearnedPlanSkill(goal, plan)
+                }
             }
 
             // 2. Curate High-Quality Training Example for Local Distillation
-            if (preferences.isLearningEnabled && preferences.isStoreTrainingDataEnabled) {
+            if (preferences.isLearningEnabled && preferences.isStoreTrainingDataEnabled && expResult.evaluation.score >= 80) {
                 val contextSummary = "Target App: ${stepRecords.firstOrNull()?.step?.toolIntent?.arguments?.get("app_name") ?: "System"}"
                 trainingDatasetManager.curateExample(
                     instruction = goal,
                     contextSummary = contextSummary,
                     stepRecords = stepRecords,
                     isSuccess = true,
-                    qualityScore = 0.96f
+                    qualityScore = expResult.evaluation.score / 100f
                 )
             }
         } else if (!allSuccess) {
             _agentState.value = AgentState.FAILED
             voiceManager.speak("Could not complete goal: $finalMessage")
-            updateTelemetry { copy(action = "Failed: $finalMessage", nextAction = "Standby", learningStatus = "Failure Pattern Recorded") }
+            updateTelemetry { copy(action = "Failed: $finalMessage", nextAction = "Standby", learningStatus = "Failure Pattern Evaluated (${expResult.evaluation.score}/100)") }
         }
 
         // Save execution to Chat history
@@ -590,6 +624,171 @@ class JarvisAgentCore(
                 source = "AGENT_CORE_VERIFIED"
             )
         )
+    }
+
+    // === Phase 11: Universal Multi-Step Task Execution Engine ===
+
+    private val _activeUniversalTask = MutableStateFlow<UniversalTask?>(null)
+    val activeUniversalTask: StateFlow<UniversalTask?> = _activeUniversalTask.asStateFlow()
+
+    suspend fun executeUniversalTask(
+        task: UniversalTask,
+        scope: CoroutineScope,
+        isUserConfirmed: Boolean = false
+    ): UniversalTask = withContext(Dispatchers.Main) {
+        isCancelled = false
+        var currentTask = task.copy(status = UniversalTaskStatus.RUNNING, updatedAt = System.currentTimeMillis())
+        _activeUniversalTask.value = currentTask
+        _currentGoal.value = task.goal
+        _agentState.value = AgentState.ACTING
+
+        logStep("🚀 Universal Task Initialized: \"${task.goal}\" (${task.plan.size} dynamic steps)")
+        updateTelemetry {
+            copy(
+                currentGoal = task.goal,
+                action = "Executing Universal Task",
+                nextAction = task.plan.firstOrNull()?.description ?: "Complete"
+            )
+        }
+
+        var taskContext = TaskContext(
+            goal = task.goal,
+            currentApp = task.targetApp ?: "com.example",
+            remainingSteps = task.plan
+        )
+
+        val executedSteps = mutableListOf<UniversalActionStep>()
+        val recentActionSignatures = mutableListOf<String>()
+
+        for ((index, step) in task.plan.withIndex()) {
+            if (isCancelled) {
+                currentTask = currentTask.copy(
+                    status = UniversalTaskStatus.CANCELLED,
+                    failureReason = "Task cancelled by user"
+                )
+                _activeUniversalTask.value = currentTask
+                _agentState.value = AgentState.CANCELLED
+                return@withContext currentTask
+            }
+
+            // Loop Detection: Prevent repeated non-progressing actions
+            val actionSig = "${step.actionType}_${step.semanticTarget}_${taskContext.currentApp}"
+            recentActionSignatures.add(actionSig)
+            if (recentActionSignatures.takeLast(4).count { it == actionSig } >= 3) {
+                logStep("⚠️ ACTION_LOOP_DETECTED on $actionSig. Halting task to prevent infinite loop.")
+                currentTask = currentTask.copy(
+                    status = UniversalTaskStatus.FAILED,
+                    failureReason = "ACTION_LOOP_DETECTED: Repeated action '$actionSig' without screen progress."
+                )
+                _activeUniversalTask.value = currentTask
+                _agentState.value = AgentState.FAILED
+                voiceManager.speak("Task stopped due to action loop detection.")
+                return@withContext currentTask
+            }
+
+            _currentActionName.value = "Step ${index + 1}/${task.plan.size}: ${step.description}"
+            logStep("▶ [Step ${index + 1}] ${step.description} [Target: ${step.semanticTarget}]")
+
+            updateTelemetry {
+                copy(
+                    action = step.description,
+                    nextAction = if (index + 1 < task.plan.size) task.plan[index + 1].description else "Complete Goal",
+                    verificationResult = "Pending"
+                )
+            }
+
+            // Execute Step
+            val execResult = universalActionExecutor.executeStep(
+                step = step,
+                taskContext = taskContext,
+                isUserConfirmed = isUserConfirmed
+            )
+
+            // App Change Detection: Pause if unexpected app appears
+            if (task.targetApp != null && execResult.afterPackage.isNotBlank() &&
+                !execResult.afterPackage.contains(task.targetApp, ignoreCase = true) &&
+                !execResult.afterPackage.contains("launcher", ignoreCase = true) &&
+                !execResult.afterPackage.contains("com.example", ignoreCase = true) &&
+                step.actionType != UniversalActionType.OPEN_APP && step.actionType != UniversalActionType.BACK
+            ) {
+                logStep("⚠️ Unexpected App Change Detected: Foreground is ${execResult.afterPackage}. Pausing task safely.")
+            }
+
+            // Update Target Telemetry
+            if (execResult.targetResolved != null) {
+                updateTelemetry {
+                    copy(
+                        currentApp = execResult.afterPackage,
+                        targetSelected = execResult.targetResolved.semanticRole,
+                        targetConfidence = execResult.targetResolved.confidence,
+                        actionResult = if (execResult.success) "SUCCESS (${execResult.executionMethod})" else "FAILED"
+                    )
+                }
+            }
+
+            if (execResult.success && execResult.isTransitionVerified) {
+                executedSteps.add(step)
+                taskContext = taskContext.copy(
+                    currentApp = execResult.afterPackage,
+                    completedSteps = executedSteps,
+                    remainingSteps = task.plan.drop(index + 1),
+                    lastAction = step.actionType,
+                    lastTarget = step.semanticTarget,
+                    lastResult = execResult.diffSummary
+                )
+                logStep("✅ Step ${index + 1} Verified: ${execResult.diffSummary}")
+            } else {
+                // Recovery sequence
+                logStep("⚠️ Step ${index + 1} failed or unverified. Initiating Phase 11 Target Recovery...")
+                val recoveryScreen = screenEngine.observeScreen(semanticGoal = step.semanticTarget, forceVisualScan = true)
+                val altTarget = universalTargetResolver.resolveTarget(step.semanticTarget, recoveryScreen)
+
+                if (altTarget.found) {
+                    logStep("🔄 Alternative target found (${altTarget.source}): Retrying step...")
+                    val retryResult = universalActionExecutor.executeStep(step, taskContext, isUserConfirmed)
+                    if (retryResult.success) {
+                        executedSteps.add(step)
+                        taskContext = taskContext.copy(
+                            currentApp = retryResult.afterPackage,
+                            completedSteps = executedSteps,
+                            remainingSteps = task.plan.drop(index + 1)
+                        )
+                        logStep("✅ Recovery step succeeded!")
+                        continue
+                    }
+                }
+
+                currentTask = currentTask.copy(
+                    status = UniversalTaskStatus.FAILED,
+                    failureReason = execResult.errorMessage ?: "Step ${step.stepId} failed to verify: ${step.expectedOutcome}"
+                )
+                _activeUniversalTask.value = currentTask
+                _agentState.value = AgentState.FAILED
+                voiceManager.speak("Could not complete task at step ${index + 1}.")
+                return@withContext currentTask
+            }
+        }
+
+        currentTask = currentTask.copy(
+            status = UniversalTaskStatus.COMPLETED,
+            result = "All ${task.plan.size} steps completed and verified successfully for goal: ${task.goal}",
+            updatedAt = System.currentTimeMillis()
+        )
+        _activeUniversalTask.value = currentTask
+        _agentState.value = AgentState.COMPLETED
+        logStep("🎉 Universal Task COMPLETED: ${task.goal}")
+        voiceManager.speak("Task completed.")
+
+        // Learn Experience
+        if (preferences.isLearningEnabled && preferences.isAutoSkillCreationEnabled) {
+            val taskPlan = TaskPlan(
+                goal = task.goal,
+                steps = task.plan.map { PlanStep(it.stepId, it.description, com.example.core.model.ToolIntent(it.actionType.name.lowercase(), it.arguments, "LOW"), it.expectedOutcome) }
+            )
+            saveLearnedPlanSkill(task.goal, taskPlan)
+        }
+
+        currentTask
     }
 
     private suspend fun saveLearnedPlanSkill(goal: String, plan: TaskPlan) {

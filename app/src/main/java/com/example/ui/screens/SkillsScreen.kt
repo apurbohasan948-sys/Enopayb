@@ -192,7 +192,10 @@ fun SkillsScreen(
                                 "search_knowledge_rag" -> viewModel.sendUserPrompt("What is the architecture of Redmi Note 12?")
                                 else -> viewModel.sendUserPrompt("Execute skill ${skill.name}")
                             }
-                        }
+                        },
+                        onToggle = { viewModel.toggleSkill(skill) },
+                        onRollback = { viewModel.rollbackSkill(skill) },
+                        onDelete = { viewModel.deleteSkill(skill) }
                     )
                 }
             }
@@ -203,9 +206,27 @@ fun SkillsScreen(
 @Composable
 fun SkillCardItem(
     skill: SkillEntity,
-    onExecute: () -> Unit
+    onExecute: () -> Unit,
+    onToggle: () -> Unit = {},
+    onRollback: () -> Unit = {},
+    onDelete: () -> Unit = {}
 ) {
-    val borderColor = if (!skill.isBuiltIn) JarvisViolet.copy(alpha = 0.6f) else JarvisBorder
+    val borderColor = when {
+        !skill.isEnabled -> JarvisTextMuted.copy(alpha = 0.3f)
+        !skill.isBuiltIn -> JarvisViolet.copy(alpha = 0.6f)
+        else -> JarvisBorder
+    }
+
+    val (statusLabel, statusColor) = when {
+        !skill.isEnabled -> "DISABLED" to JarvisTextMuted
+        skill.isBuiltIn -> "CORE BUILTIN" to JarvisCyan
+        skill.procedure.contains("CANDIDATE") -> "CANDIDATE" to JarvisViolet
+        skill.procedure.contains("VALIDATING") -> "VALIDATING" to JarvisAmber
+        skill.procedure.contains("VERIFIED") -> "VERIFIED" to JarvisCyan
+        skill.procedure.contains("DEPRECATED") || skill.failureCount >= 3 -> "DEPRECATED" to JarvisRed
+        skill.procedure.contains("STALE") -> "STALE" to JarvisAmber
+        else -> "ACTIVE" to JarvisEmerald
+    }
 
     HologramCard(borderColor = borderColor) {
         Row(
@@ -228,15 +249,20 @@ fun SkillCardItem(
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace
                 )
-                if (!skill.isBuiltIn) {
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = JarvisViolet.copy(alpha = 0.2f),
-                        border = BorderStroke(0.5.dp, JarvisViolet)
-                    ) {
-                        Text("LEARNED", color = JarvisViolet, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
-                    }
+                Spacer(modifier = Modifier.width(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = statusColor.copy(alpha = 0.15f),
+                    border = BorderStroke(0.5.dp, statusColor)
+                ) {
+                    Text(
+                        text = statusLabel,
+                        color = statusColor,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                    )
                 }
             }
             RiskBadge(riskLevel = skill.riskLevel)
@@ -284,29 +310,69 @@ fun SkillCardItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
+                val totalExec = skill.successCount + skill.failureCount
+                val rate = if (totalExec > 0) (skill.successCount * 100 / totalExec) else 100
+                Text(
+                    text = "Success Rate: $rate% (${skill.successCount}/$totalExec) | v${skill.version}",
+                    color = if (rate >= 80) JarvisCyan else JarvisAmber,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace
+                )
                 Text(
                     text = "Perms: ${skill.requiredPermissions}",
                     color = JarvisTextMuted,
                     fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace
                 )
-                Text(
-                    text = "Success: ${skill.successCount} | Fail: ${skill.failureCount} | Ver: ${skill.version}",
-                    color = JarvisCyan,
-                    fontSize = 9.sp,
-                    fontFamily = FontFamily.Monospace
-                )
             }
 
-            Button(
-                onClick = onExecute,
-                colors = ButtonDefaults.buttonColors(containerColor = JarvisCyan.copy(alpha = 0.15f)),
-                border = BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.6f)),
-                modifier = Modifier.height(32.dp)
-            ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = JarvisCyan, modifier = Modifier.size(12.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Test Run", color = JarvisCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!skill.isBuiltIn && skill.previousVersionProcedure != null) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = JarvisAmber.copy(alpha = 0.15f),
+                        border = BorderStroke(0.8.dp, JarvisAmber.copy(alpha = 0.6f)),
+                        modifier = Modifier.clickable { onRollback() }
+                    ) {
+                        Text(
+                            text = "Rollback",
+                            color = JarvisAmber,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                if (!skill.isBuiltIn) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (skill.isEnabled) JarvisEmerald.copy(alpha = 0.15f) else JarvisTextMuted.copy(alpha = 0.15f),
+                        border = BorderStroke(0.8.dp, if (skill.isEnabled) JarvisEmerald else JarvisTextMuted),
+                        modifier = Modifier.clickable { onToggle() }
+                    ) {
+                        Text(
+                            text = if (skill.isEnabled) "Enabled" else "Disabled",
+                            color = if (skill.isEnabled) JarvisEmerald else JarvisTextMuted,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = onExecute,
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisCyan.copy(alpha = 0.15f)),
+                    border = BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.6f)),
+                    modifier = Modifier.height(30.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = JarvisCyan, modifier = Modifier.size(12.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Test Run", color = JarvisCyan, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                }
             }
         }
     }

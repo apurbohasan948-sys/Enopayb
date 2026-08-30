@@ -121,12 +121,13 @@ class JarvisVoiceForegroundService : Service() {
 
     fun updateStatus(state: VoiceState, detailText: String? = null) {
         val text = detailText ?: when (state) {
-            VoiceState.SLEEPING -> "Standby — Say \"Hey JARVIS\""
+            VoiceState.IDLE, VoiceState.SLEEPING, VoiceState.LISTENING_FOR_WAKEWORD -> "Standby — Say \"Hey JARVIS\""
             VoiceState.WAKE_DETECTED -> "Wake word detected"
-            VoiceState.LISTENING -> "Listening for command..."
-            VoiceState.PROCESSING -> "Processing request..."
-            VoiceState.ACTING -> "Executing task on device..."
-            VoiceState.SPEAKING -> "Speaking response..."
+            VoiceState.LISTENING, VoiceState.LISTENING_FOR_COMMAND, VoiceState.LISTENING_FOR_FOLLOWUP -> "Listening for command..."
+            VoiceState.TRANSCRIBING -> "Transcribing speech..."
+            VoiceState.PROCESSING, VoiceState.UNDERSTANDING -> "Processing request..."
+            VoiceState.ACTING, VoiceState.EXECUTING -> "Executing task on device..."
+            VoiceState.SPEAKING, VoiceState.RESPONDING -> "Speaking response..."
             VoiceState.WAITING_FOR_CONFIRMATION -> "Waiting for confirmation..."
             VoiceState.CANCELLED -> "Operation cancelled"
         }

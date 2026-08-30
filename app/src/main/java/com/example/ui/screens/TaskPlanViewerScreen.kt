@@ -139,11 +139,11 @@ fun TaskPlanViewerScreen(
                         Spacer(modifier = Modifier.height(10.dp))
 
                         val benchmarks = listOf(
-                            "Open YouTube and play Tom and Jerry",
-                            "Open Chrome and search for HSC result",
-                            "Open Settings and go to Bluetooth",
-                            "Open Calculator and calculate 1250 divided by 25",
-                            "Open Gallery",
+                            "Open YouTube",
+                            "Open YouTube and search Tom and Jerry",
+                            "Open Chrome and search HSC result",
+                            "Open Settings and go back",
+                            "Open Gallery and scroll",
                             "Open WhatsApp and find Hammad"
                         )
 

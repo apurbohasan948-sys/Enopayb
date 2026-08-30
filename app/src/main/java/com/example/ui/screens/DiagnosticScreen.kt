@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Storage
@@ -360,6 +362,153 @@ fun DiagnosticScreen(viewModel: JarvisViewModel) {
                             prefs.isAutonomousWorkersEnabled = enabled
                         }
                     )
+                }
+            }
+        }
+
+        // 3.5. PHASE 12 VOICE, WAKE-WORD & CONVERSATION DIAGNOSTICS
+        item {
+            val voiceDiag = viewModel.voiceManager.getVoiceDiagnostics()
+            val voiceState by viewModel.voiceState.collectAsState()
+            val isWakeEnabled by viewModel.voiceManager.assistantManager.wakeWordEngine.isWakeWordEnabled.collectAsState()
+            val wakePhrase by viewModel.voiceManager.assistantManager.wakeWordEngine.selectedWakePhrase.collectAsState()
+            val sensitivity by viewModel.voiceManager.assistantManager.wakeWordEngine.sensitivity.collectAsState()
+            val responseMode by viewModel.voiceManager.assistantManager.ttsManager.responseMode.collectAsState()
+            val lastError by viewModel.voiceManager.assistantManager.lastRecognitionError.collectAsState()
+
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = JarvisCardBg),
+                border = BorderStroke(0.8.dp, JarvisCyan.copy(alpha = 0.5f)),
+                modifier = Modifier.fillMaxWidth().testTag("voice_diagnostics_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Mic, contentDescription = null, tint = JarvisCyan, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "VOICE & WAKE-WORD ENGINE",
+                                color = JarvisCyan,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Switch(
+                            checked = isWakeEnabled,
+                            onCheckedChange = { viewModel.setWakeWordEnabled(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = JarvisCyan,
+                                checkedTrackColor = JarvisCyan.copy(alpha = 0.3f),
+                                uncheckedThumbColor = JarvisTextMuted,
+                                uncheckedTrackColor = JarvisDarkNavy
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = JarvisDarkNavy,
+                        border = BorderStroke(0.5.dp, JarvisBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Current State:", color = JarvisTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text(voiceState.toDisplayLabel(), color = JarvisEmerald, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Selected Phrase:", color = JarvisTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text("\"$wakePhrase\"", color = JarvisCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Sensitivity:", color = JarvisTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text(sensitivity.label, color = JarvisTextPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Response Mode:", color = JarvisTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text(responseMode.label, color = JarvisAmber, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Battery Impact:", color = JarvisTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text("Ultra-Low (Acoustic Idle)", color = JarvisEmerald, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            if (lastError != null) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Last STT Error:", color = JarvisRed, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                    Text(lastError ?: "", color = JarvisRed, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text("Wake Phrases:", color = JarvisTextSecondary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("Hey JARVIS", "Hey Edith", "এই জারভিস").forEach { phrase ->
+                            val isSelected = wakePhrase == phrase
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isSelected) JarvisCyan.copy(alpha = 0.2f) else JarvisDarkNavy,
+                                border = BorderStroke(0.8.dp, if (isSelected) JarvisCyan else JarvisBorder),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { viewModel.voiceManager.setSelectedWakePhrase(phrase) }
+                            ) {
+                                Box(modifier = Modifier.padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = phrase,
+                                        color = if (isSelected) JarvisCyan else JarvisTextMuted,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { viewModel.testWakeWordTrigger() },
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(0.8.dp, JarvisCyan),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Simulate Wake", color = JarvisCyan, fontSize = 11.sp)
+                        }
+
+                        Button(
+                            onClick = { viewModel.startVoiceListening() },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = JarvisCyan.copy(alpha = 0.25f)),
+                            border = BorderStroke(0.8.dp, JarvisCyan),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Listen Command", color = JarvisCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
         }

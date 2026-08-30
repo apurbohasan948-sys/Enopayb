@@ -7,12 +7,17 @@ import com.example.core.tools.ToolRouter
 import com.example.core.voice.context.VoiceConversationContext
 import com.example.core.voice.service.JarvisOverlayService
 import com.example.core.voice.service.JarvisVoiceForegroundService
+import com.example.core.voice.tts.ResponseMode
 import com.example.core.voice.wake.WakeSensitivity
 import com.example.data.repository.JarvisRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 
+/**
+ * Phase 12 Unified VoiceManager facade.
+ * Encapsulates the complete VoiceAssistantManager pipeline.
+ */
 class VoiceManager(
     private val context: Context,
     agentCoreProvider: (() -> JarvisAgentCore?)? = null,
@@ -26,6 +31,14 @@ class VoiceManager(
     var toolRouter: ToolRouter? = null
     var repository: JarvisRepository? = null
 
+    val assistantManager = VoiceAssistantManager(
+        context = context,
+        coroutineScope = scope,
+        agentCoreProvider = { agentCore ?: agentCoreProvider?.invoke() },
+        toolRouterProvider = { toolRouter ?: toolRouterProvider?.invoke() },
+        repositoryProvider = { repository ?: repositoryProvider?.invoke() }
+    )
+
     val interactionManager = VoiceInteractionManager(
         context = context,
         coroutineScope = scope,
@@ -34,70 +47,86 @@ class VoiceManager(
         repositoryProvider = { repository ?: repositoryProvider?.invoke() }
     )
 
-    val voiceState: StateFlow<VoiceState> = interactionManager.voiceState
-    val liveSpokenText: StateFlow<String> = interactionManager.liveSpokenText
-    val audioWaveLevel: StateFlow<Float> = interactionManager.audioWaveLevel
+    val voiceState: StateFlow<VoiceState> = assistantManager.voiceState
+    val liveSpokenText: StateFlow<String> = assistantManager.liveSpokenText
+    val audioWaveLevel: StateFlow<Float> = assistantManager.audioWaveLevel
     val conversationContext: StateFlow<VoiceConversationContext> = interactionManager.conversationContext
-    val pendingConfirmationIntent: StateFlow<ToolIntent?> = interactionManager.pendingConfirmationIntent
-    val isMicrophoneMuted: StateFlow<Boolean> = interactionManager.isMicrophoneMuted
+    val pendingConfirmationIntent: StateFlow<ToolIntent?> = assistantManager.pendingConfirmationIntent
+    val isMicrophoneMuted: StateFlow<Boolean> = assistantManager.isMicrophoneMuted
     val isCloudAllowed: StateFlow<Boolean> = interactionManager.isCloudAllowed
 
-    var speechRate: Float = 1.05f
+    var speechRate: Float
+        get() = assistantManager.ttsManager.speechRate
         set(value) {
-            field = value
+            assistantManager.ttsManager.speechRate = value
             interactionManager.setSpeechRate(value)
         }
 
-    var speechPitch: Float = 0.95f
+    var speechPitch: Float
+        get() = assistantManager.ttsManager.speechPitch
         set(value) {
-            field = value
+            assistantManager.ttsManager.speechPitch = value
             interactionManager.setSpeechPitch(value)
         }
 
-    var currentLanguage: String = "EN"
+    var responseMode: ResponseMode
+        get() = assistantManager.ttsManager.responseMode.value
+        set(value) {
+            assistantManager.ttsManager.setResponseMode(value)
+        }
 
-    fun speak(text: String, onFinished: (() -> Unit)? = null) {
-        interactionManager.speakDirect(text, onFinished)
+    var currentLanguage: String
+        get() = assistantManager.ttsManager.currentLanguage.value
+        set(value) {
+            assistantManager.ttsManager.setLanguage(value)
+        }
+
+    fun speak(text: String, isVerifiedSuccess: Boolean = true, onFinished: (() -> Unit)? = null) {
+        assistantManager.ttsManager.speak(text, isVerifiedSuccess, onDone = onFinished)
     }
 
     fun stopSpeaking() {
-        interactionManager.stopSpeaking()
+        assistantManager.ttsManager.stop()
     }
 
-    fun startListeningForCommand() {
-        interactionManager.startListeningForCommand()
+    fun startListeningForCommand(isFollowUp: Boolean = false) {
+        assistantManager.startListeningForCommand(isFollowUp)
     }
 
     fun startListeningSimulation(onResult: (String) -> Unit) {
-        interactionManager.startListeningForCommand()
+        assistantManager.startListeningForCommand()
     }
 
     fun simulateVoiceInput(text: String) {
-        interactionManager.processSpokenCommand(text)
+        assistantManager.processSpokenUtterance(text)
     }
 
     fun setIdle() {
-        // Standby
+        assistantManager.stateController.reset()
     }
 
     fun setWaveform(level: Float) {
-        // Handled dynamically by audio visualizer
+        // Updated dynamically via audio wave flows
     }
 
     fun setWakeSensitivity(sens: WakeSensitivity) {
-        interactionManager.setWakeSensitivity(sens)
+        assistantManager.setWakeSensitivity(sens)
+    }
+
+    fun setSelectedWakePhrase(phrase: String) {
+        assistantManager.setSelectedWakePhrase(phrase)
     }
 
     fun onAudioPermissionGranted() {
-        interactionManager.onAudioPermissionGranted()
+        assistantManager.onAudioPermissionGranted()
     }
 
     fun setWakeWordEnabled(enabled: Boolean) {
-        interactionManager.setWakeWordEnabled(enabled)
+        assistantManager.setWakeWordEnabled(enabled)
     }
 
     fun toggleMicrophone(muted: Boolean) {
-        interactionManager.toggleMicrophone(muted)
+        assistantManager.toggleMicrophone(muted)
     }
 
     fun setCloudAllowed(allowed: Boolean) {
@@ -105,11 +134,11 @@ class VoiceManager(
     }
 
     fun startBackgroundWakeService() {
-        interactionManager.startBackgroundWakeMonitoring()
+        assistantManager.startBackgroundWakeService()
     }
 
     fun stopBackgroundWakeService() {
-        interactionManager.stopBackgroundWakeMonitoring()
+        assistantManager.stopBackgroundWakeService()
     }
 
     fun startOverlayHud() {
@@ -120,7 +149,12 @@ class VoiceManager(
         JarvisOverlayService.stopOverlay(context)
     }
 
+    fun getVoiceDiagnostics(): Map<String, String> {
+        return assistantManager.getVoiceDiagnostics()
+    }
+
     fun shutdown() {
+        assistantManager.shutdown()
         interactionManager.shutdown()
     }
 }

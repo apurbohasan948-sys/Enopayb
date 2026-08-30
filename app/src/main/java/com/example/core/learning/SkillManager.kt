@@ -18,19 +18,81 @@ import org.json.JSONObject
 /**
  * SkillManager.
  * Manages reusable, versioned, semantic skills for JARVIS.
- * Extracts procedural workflows from verified experiences and Gemini teacher sessions.
- * Manages success rates, confidence scores, and version rollback.
+ * Lifecycle: CANDIDATE -> VALIDATING -> VERIFIED -> ACTIVE.
+ * Retires failing skills (DEPRECATED) and flags UI changes (STALE).
  */
 class SkillManager(
-    private val dao: JarvisDao
+    private val dao: JarvisDao,
+    private val candidateGenerator: SkillCandidateGenerator = SkillCandidateGenerator(dao)
 ) {
     companion object {
         private const val TAG = "JARVIS_SkillManager"
+        const val SUCCESS_RATE_THRESHOLD = 0.70f
+        const val MAX_CONSECUTIVE_FAILURES = 3
     }
 
     val allSkills: Flow<List<SkillEntity>> = dao.getAllSkills()
     val enabledSkills: Flow<List<SkillEntity>> = dao.getEnabledSkills()
     val learnedSkills: Flow<List<SkillEntity>> = dao.getLearnedSkills()
+
+    /**
+     * Finds a matching reusable Skill and binds runtime variables into an executable TaskPlan.
+     */
+    suspend fun findMatchingSkill(goal: String, currentApp: String? = null): Pair<SkillEntity, TaskPlan>? = withContext(Dispatchers.IO) {
+        try {
+            val (intent, slots) = candidateGenerator.analyzeIntentAndSlots(goal, currentApp ?: "")
+            val allSkillsList = dao.getAllSkillsSync().filter { it.isEnabled }
+
+            for (skill in allSkillsList) {
+                if (!skill.isEnabled) continue
+
+                // Check Generalized Model
+                val genModel = GeneralizedSkillModel.fromJson(skill.procedure)
+                if (genModel != null) {
+                    if (genModel.status == SkillLifecycleStatus.DEPRECATED || genModel.status == SkillLifecycleStatus.DISABLED) {
+                        continue
+                    }
+
+                    val normIntent = intent.lowercase().replace("_", "")
+                    val normArchetype = genModel.intentArchetype.lowercase().replace("_", "")
+                    val normSkillName = skill.name.lowercase().replace("_", "")
+                    val normGoal = goal.lowercase().replace("_", " ")
+
+                    val matchesIntent = genModel.intentArchetype.equals(intent, ignoreCase = true) ||
+                                          normArchetype.contains(normIntent) ||
+                                          normIntent.contains(normArchetype) ||
+                                          normSkillName.contains(normIntent) ||
+                                          normGoal.contains(skill.name.replace("_", " ")) ||
+                                          skill.name.replace("_", " ").split(" ").all { word -> word.length < 3 || normGoal.contains(word) }
+                    val matchesApp = currentApp.isNullOrBlank() || genModel.targetAppPackage.isBlank() ||
+                                     genModel.targetAppPackage.contains(currentApp, ignoreCase = true) ||
+                                     currentApp.contains(genModel.targetAppPackage, ignoreCase = true)
+
+                    if (matchesIntent && matchesApp) {
+                        val boundPlan = candidateGenerator.bindSkillParameters(skill, goal, slots)
+                        if (boundPlan != null && boundPlan.steps.isNotEmpty()) {
+                            Log.d(TAG, "🎯 Matched Generalized Skill: ${skill.name} (Status: ${genModel.status}) with ${slots.size} slots")
+                            return@withContext Pair(skill, boundPlan)
+                        }
+                    }
+                } else {
+                    // Direct name or keyword match for Builtin/Legacy skills
+                    val lowerGoal = goal.lowercase().trim()
+                    val lowerName = skill.name.lowercase().trim()
+                    if (lowerName == lowerGoal || lowerGoal.contains(lowerName) || (lowerName.contains("youtube") && lowerGoal.contains("youtube"))) {
+                        val plan = candidateGenerator.bindSkillParameters(skill, goal, slots) ?: convertSkillToPlan(skill, goal)
+                        if (plan != null && plan.steps.isNotEmpty()) {
+                            return@withContext Pair(skill, plan)
+                        }
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in findMatchingSkill", e)
+            null
+        }
+    }
 
     /**
      * Extracts and synthesizes a new reusable skill from a verified experience.
@@ -49,6 +111,7 @@ class SkillManager(
                 put("goalArchetype", experience.goal)
                 put("appPackage", experience.appPackage)
                 put("steps", actionsArray)
+                put("status", SkillLifecycleStatus.ACTIVE.name)
             }
 
             val skill = SkillEntity(
@@ -63,7 +126,7 @@ class SkillManager(
                 verificationMethod = "Multimodal State & Screen Transition Verification",
                 version = if (existing != null) incrementVersion(existing.version) else "1.0.0",
                 isEnabled = true,
-                executionCount = existing?.executionCount ?: 1,
+                executionCount = (existing?.executionCount ?: 0) + 1,
                 successCount = (existing?.successCount ?: 0) + 1,
                 failureCount = existing?.failureCount ?: 0,
                 successRate = 1.0f,
@@ -138,6 +201,7 @@ class SkillManager(
             put("steps", stepsArray)
             put("source", "Gemini Teacher Supervisor")
             put("appPackage", appPackage)
+            put("status", SkillLifecycleStatus.ACTIVE.name)
         }
 
         val skill = SkillEntity(
@@ -169,8 +233,85 @@ class SkillManager(
     }
 
     /**
-     * Converts a stored Skill into an executable TaskPlan.
+     * Updates Skill execution stats and evaluates lifecycle transitions (CANDIDATE -> VALIDATING -> VERIFIED -> ACTIVE or DEPRECATED).
      */
+    suspend fun recordExecution(skillName: String, success: Boolean) = withContext(Dispatchers.IO) {
+        val skill = dao.getSkillByName(skillName) ?: return@withContext
+        val newExecCount = skill.executionCount + 1
+        val newSuccessCount = if (success) skill.successCount + 1 else skill.successCount
+        val newFailureCount = if (!success) skill.failureCount + 1 else skill.failureCount
+        val newRate = newSuccessCount.toFloat() / newExecCount.coerceAtLeast(1)
+
+        val genModel = GeneralizedSkillModel.fromJson(skill.procedure)
+        var newStatus = genModel?.status ?: SkillLifecycleStatus.ACTIVE
+        val consecutiveFailures = if (success) 0 else (genModel?.consecutiveFailures ?: 0) + 1
+
+        // Lifecycle Progression
+        if (success) {
+            newStatus = when (newStatus) {
+                SkillLifecycleStatus.CANDIDATE -> SkillLifecycleStatus.VALIDATING
+                SkillLifecycleStatus.VALIDATING -> if (newSuccessCount >= 3) SkillLifecycleStatus.VERIFIED else SkillLifecycleStatus.VALIDATING
+                SkillLifecycleStatus.VERIFIED -> if (newSuccessCount >= 5) SkillLifecycleStatus.ACTIVE else SkillLifecycleStatus.VERIFIED
+                SkillLifecycleStatus.STALE -> SkillLifecycleStatus.VERIFIED
+                else -> newStatus
+            }
+        } else {
+            // Deprecation check
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES || (newExecCount >= 3 && newRate < SUCCESS_RATE_THRESHOLD)) {
+                newStatus = SkillLifecycleStatus.DEPRECATED
+                Log.w(TAG, "⚠️ Skill '$skillName' demoted to DEPRECATED (Rate: ${(newRate * 100).toInt()}%, Consecutive fails: $consecutiveFailures)")
+            }
+        }
+
+        val updatedProcedure = if (genModel != null) {
+            genModel.copy(
+                status = newStatus,
+                successRate = newRate,
+                usageCount = newExecCount,
+                failureCount = newFailureCount,
+                consecutiveFailures = consecutiveFailures,
+                lastVerifiedAt = if (success) System.currentTimeMillis() else genModel.lastVerifiedAt
+            ).toJson().toString(2)
+        } else {
+            try {
+                JSONObject(skill.procedure).apply {
+                    put("status", newStatus.name)
+                    put("consecutiveFailures", consecutiveFailures)
+                }.toString(2)
+            } catch (e: Exception) {
+                skill.procedure
+            }
+        }
+
+        val updatedSkill = skill.copy(
+            executionCount = newExecCount,
+            successCount = newSuccessCount,
+            failureCount = newFailureCount,
+            successRate = newRate,
+            lastExecutedAt = System.currentTimeMillis(),
+            lastSuccessAt = if (success) System.currentTimeMillis() else skill.lastSuccessAt,
+            procedure = updatedProcedure,
+            isEnabled = newStatus != SkillLifecycleStatus.DEPRECATED && newStatus != SkillLifecycleStatus.DISABLED
+        )
+
+        dao.updateSkill(updatedSkill)
+    }
+
+    /**
+     * Marks a skill as STALE when an app UI change or version upgrade is detected.
+     */
+    suspend fun markSkillStale(skillName: String, reason: String) = withContext(Dispatchers.IO) {
+        val skill = dao.getSkillByName(skillName) ?: return@withContext
+        val genModel = GeneralizedSkillModel.fromJson(skill.procedure)
+        val updatedProcedure = if (genModel != null) {
+            genModel.copy(status = SkillLifecycleStatus.STALE).toJson().toString(2)
+        } else {
+            skill.procedure
+        }
+        dao.updateSkill(skill.copy(procedure = updatedProcedure, confidence = 0.60f))
+        Log.w(TAG, "Marked Skill '$skillName' as STALE: $reason")
+    }
+
     fun convertSkillToPlan(skill: SkillEntity, runtimeGoal: String): TaskPlan? {
         return try {
             val root = JSONObject(skill.procedure)
@@ -192,21 +333,13 @@ class SkillManager(
                     argsMap[k] = argsObj.optString(k)
                 }
 
-                steps.add(PlanStep(num, desc, ToolIntent(tool, argsMap, "LOW"), exp))
+                steps.add(PlanStep(num, desc, ToolIntent(tool, argsMap, skill.riskLevel.name), exp))
             }
 
             TaskPlan(goal = runtimeGoal.ifBlank { skill.name }, steps = steps)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse TaskPlan from Skill ${skill.name}", e)
             null
-        }
-    }
-
-    suspend fun recordExecution(skillName: String, success: Boolean) = withContext(Dispatchers.IO) {
-        if (success) {
-            dao.recordSkillSuccess(skillName)
-        } else {
-            dao.recordSkillFailure(skillName)
         }
     }
 
@@ -238,7 +371,8 @@ class SkillManager(
             .replace(Regex("[^a-z0-9_ ]"), "")
             .trim()
             .replace("\\s+".toRegex(), "_")
-        return "skill_${pkg.substringAfterLast(".")}_$clean".take(40)
+        val appTag = pkg.substringAfterLast(".")
+        return "skill_${appTag}_$clean".take(40)
     }
 
     private fun incrementVersion(ver: String): String {

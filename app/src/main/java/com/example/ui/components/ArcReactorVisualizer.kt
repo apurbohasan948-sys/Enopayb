@@ -81,11 +81,11 @@ fun ArcReactorVisualizer(
     )
 
     val activeColor = when (voiceState) {
-        VoiceState.SLEEPING -> if (isSecurityShieldActive) JarvisCyan else JarvisAmber
-        VoiceState.WAKE_DETECTED, VoiceState.LISTENING -> JarvisCyan
-        VoiceState.PROCESSING -> JarvisViolet
-        VoiceState.ACTING -> JarvisAmber
-        VoiceState.SPEAKING -> JarvisEmerald
+        VoiceState.IDLE, VoiceState.SLEEPING, VoiceState.LISTENING_FOR_WAKEWORD -> if (isSecurityShieldActive) JarvisCyan else JarvisAmber
+        VoiceState.WAKE_DETECTED, VoiceState.LISTENING, VoiceState.LISTENING_FOR_COMMAND, VoiceState.LISTENING_FOR_FOLLOWUP, VoiceState.TRANSCRIBING -> JarvisCyan
+        VoiceState.PROCESSING, VoiceState.UNDERSTANDING -> JarvisViolet
+        VoiceState.ACTING, VoiceState.EXECUTING -> JarvisAmber
+        VoiceState.SPEAKING, VoiceState.RESPONDING -> JarvisEmerald
         VoiceState.WAITING_FOR_CONFIRMATION -> JarvisAmber
         VoiceState.CANCELLED -> JarvisRed
     }
@@ -191,16 +191,7 @@ fun ArcReactorVisualizer(
                 letterSpacing = 2.sp
             )
             Text(
-                text = when (voiceState) {
-                    VoiceState.SLEEPING -> "STANDBY"
-                    VoiceState.WAKE_DETECTED -> "ONLINE"
-                    VoiceState.LISTENING -> "LISTENING"
-                    VoiceState.PROCESSING -> "REASONING"
-                    VoiceState.ACTING -> "ACTING"
-                    VoiceState.SPEAKING -> "SPEAKING"
-                    VoiceState.WAITING_FOR_CONFIRMATION -> "WAITING"
-                    VoiceState.CANCELLED -> "CANCELLED"
-                },
+                text = voiceState.toDisplayLabel().uppercase(),
                 color = activeColor,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.SemiBold,

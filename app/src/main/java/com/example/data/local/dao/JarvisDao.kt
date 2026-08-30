@@ -63,6 +63,9 @@ interface JarvisDao {
     @Query("SELECT * FROM experiences ORDER BY timestamp DESC")
     fun getAllExperiences(): Flow<List<ExperienceEntity>>
 
+    @Query("SELECT * FROM experiences ORDER BY timestamp DESC")
+    suspend fun getAllExperiencesList(): List<ExperienceEntity>
+
     @Query("SELECT * FROM experiences WHERE isSuccess = 1 ORDER BY timestamp DESC")
     fun getSuccessfulExperiences(): Flow<List<ExperienceEntity>>
 

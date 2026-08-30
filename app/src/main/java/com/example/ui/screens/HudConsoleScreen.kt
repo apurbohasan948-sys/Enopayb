@@ -249,11 +249,11 @@ fun HudConsoleScreen(
                             .size(8.dp)
                             .background(
                                 color = when (voiceState) {
-                                    VoiceState.SLEEPING -> JarvisCyan
-                                    VoiceState.WAKE_DETECTED, VoiceState.LISTENING -> JarvisBlue
-                                    VoiceState.PROCESSING -> JarvisAmber
-                                    VoiceState.ACTING -> JarvisViolet
-                                    VoiceState.SPEAKING -> JarvisEmerald
+                                    VoiceState.IDLE, VoiceState.SLEEPING, VoiceState.LISTENING_FOR_WAKEWORD -> JarvisCyan
+                                    VoiceState.WAKE_DETECTED, VoiceState.LISTENING, VoiceState.LISTENING_FOR_COMMAND, VoiceState.LISTENING_FOR_FOLLOWUP, VoiceState.TRANSCRIBING -> JarvisBlue
+                                    VoiceState.PROCESSING, VoiceState.UNDERSTANDING -> JarvisAmber
+                                    VoiceState.ACTING, VoiceState.EXECUTING -> JarvisViolet
+                                    VoiceState.SPEAKING, VoiceState.RESPONDING -> JarvisEmerald
                                     VoiceState.WAITING_FOR_CONFIRMATION -> JarvisAmber
                                     VoiceState.CANCELLED -> JarvisRed
                                 },
@@ -262,16 +262,7 @@ fun HudConsoleScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = when (voiceState) {
-                            VoiceState.SLEEPING -> "STANDBY — SAY \"HEY JARVIS\""
-                            VoiceState.WAKE_DETECTED -> "WAKE DETECTED"
-                            VoiceState.LISTENING -> "LISTENING..."
-                            VoiceState.PROCESSING -> "PROCESSING QUERY..."
-                            VoiceState.ACTING -> "EXECUTING ON DEVICE..."
-                            VoiceState.SPEAKING -> "SPEAKING..."
-                            VoiceState.WAITING_FOR_CONFIRMATION -> "AWAITING VOICE CONFIRMATION"
-                            VoiceState.CANCELLED -> "CANCELLED"
-                        },
+                        text = voiceState.toDisplayLabel().uppercase(),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,

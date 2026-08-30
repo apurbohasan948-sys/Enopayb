@@ -1,25 +1,54 @@
 package com.example.core.voice
 
+/**
+ * Phase 12 Voice Assistant State Machine States.
+ */
 enum class VoiceState {
-    SLEEPING,
+    IDLE,
+    LISTENING_FOR_WAKEWORD,
     WAKE_DETECTED,
+    LISTENING_FOR_COMMAND,
+    TRANSCRIBING,
+    UNDERSTANDING,
+    EXECUTING,
+    RESPONDING,
+    LISTENING_FOR_FOLLOWUP,
+    WAITING_FOR_CONFIRMATION,
+    CANCELLED,
+
+    // Aliases for compatibility
+    SLEEPING,
     LISTENING,
     PROCESSING,
     ACTING,
-    SPEAKING,
-    WAITING_FOR_CONFIRMATION,
-    CANCELLED;
+    SPEAKING;
 
-    fun isInteractive(): Boolean = this == LISTENING || this == WAITING_FOR_CONFIRMATION
+    fun isInteractive(): Boolean = this == LISTENING_FOR_COMMAND ||
+            this == LISTENING ||
+            this == LISTENING_FOR_FOLLOWUP ||
+            this == WAITING_FOR_CONFIRMATION
 
     fun toDisplayLabel(): String = when (this) {
-        SLEEPING -> "SLEEPING"
+        IDLE, SLEEPING -> "STANDBY"
+        LISTENING_FOR_WAKEWORD -> "AWAITING WAKE WORD"
         WAKE_DETECTED -> "WAKE DETECTED"
-        LISTENING -> "LISTENING..."
-        PROCESSING -> "THINKING..."
-        ACTING -> "EXECUTING..."
-        SPEAKING -> "SPEAKING..."
+        LISTENING_FOR_COMMAND, LISTENING -> "LISTENING..."
+        TRANSCRIBING -> "TRANSCRIBING..."
+        UNDERSTANDING, PROCESSING -> "UNDERSTANDING..."
+        EXECUTING, ACTING -> "EXECUTING..."
+        RESPONDING, SPEAKING -> "RESPONDING..."
+        LISTENING_FOR_FOLLOWUP -> "LISTENING (FOLLOW-UP)..."
         WAITING_FOR_CONFIRMATION -> "WAITING FOR CONFIRMATION"
+        CANCELLED -> "CANCELLED"
+    }
+
+    fun toHudState(): String = when (this) {
+        IDLE, SLEEPING, LISTENING_FOR_WAKEWORD -> "IDLE"
+        WAKE_DETECTED, LISTENING_FOR_COMMAND, LISTENING, LISTENING_FOR_FOLLOWUP -> "LISTENING"
+        TRANSCRIBING, UNDERSTANDING, PROCESSING -> "THINKING"
+        EXECUTING, ACTING -> "ACTING"
+        WAITING_FOR_CONFIRMATION -> "WAITING"
+        RESPONDING, SPEAKING -> "RESPONDING"
         CANCELLED -> "CANCELLED"
     }
 }

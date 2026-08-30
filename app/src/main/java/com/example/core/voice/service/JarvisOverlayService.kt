@@ -216,11 +216,11 @@ fun FloatingHudOrb(
     onLongPress: () -> Unit
 ) {
     val orbColor = when (state) {
-        VoiceState.SLEEPING -> Color(0xFF00E5FF)
-        VoiceState.WAKE_DETECTED, VoiceState.LISTENING -> Color(0xFF00B0FF)
-        VoiceState.PROCESSING -> Color(0xFFFFB300)
-        VoiceState.ACTING -> Color(0xFF7C4DFF)
-        VoiceState.SPEAKING -> Color(0xFF00E676)
+        VoiceState.IDLE, VoiceState.SLEEPING, VoiceState.LISTENING_FOR_WAKEWORD -> Color(0xFF00E5FF)
+        VoiceState.WAKE_DETECTED, VoiceState.LISTENING, VoiceState.LISTENING_FOR_COMMAND, VoiceState.LISTENING_FOR_FOLLOWUP, VoiceState.TRANSCRIBING -> Color(0xFF00B0FF)
+        VoiceState.PROCESSING, VoiceState.UNDERSTANDING -> Color(0xFFFFB300)
+        VoiceState.ACTING, VoiceState.EXECUTING -> Color(0xFF7C4DFF)
+        VoiceState.SPEAKING, VoiceState.RESPONDING -> Color(0xFF00E676)
         VoiceState.WAITING_FOR_CONFIRMATION -> Color(0xFFFF9100)
         VoiceState.CANCELLED -> Color(0xFFFF1744)
     }
@@ -257,16 +257,7 @@ fun FloatingHudOrb(
             Spacer(modifier = Modifier.width(6.dp))
 
             Text(
-                text = when (state) {
-                    VoiceState.SLEEPING -> "JARVIS"
-                    VoiceState.WAKE_DETECTED -> "WAKE"
-                    VoiceState.LISTENING -> "LISTENING"
-                    VoiceState.PROCESSING -> "THINKING"
-                    VoiceState.ACTING -> "ACTING"
-                    VoiceState.SPEAKING -> "SPEAKING"
-                    VoiceState.WAITING_FOR_CONFIRMATION -> "WAITING"
-                    VoiceState.CANCELLED -> "CANCELLED"
-                },
+                text = state.toDisplayLabel().uppercase(),
                 color = orbColor,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold

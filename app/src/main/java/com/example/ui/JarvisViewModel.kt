@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.core.accessibility.AccessibilityDiagnostics
 import com.example.core.accessibility.JarvisAccessibilityService
 import com.example.core.agent.AgentController
+import com.example.core.agent.UniversalTask
 import com.example.core.communication.CommunicationHistoryTracker
 import com.example.core.communication.CommunicationIntent
 import com.example.core.communication.CommunicationIntentParser
@@ -1160,7 +1161,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             _isProcessing.value = true
             refreshAccessibilityDiagnostics()
             refreshCapabilities()
-            jarvisAgentCore.executeGoal(goal, viewModelScope)
+            val universalTask = jarvisAgentCore.universalPlanner.planUniversalTask(goal)
+            jarvisAgentCore.executeUniversalTask(universalTask, viewModelScope)
             _isProcessing.value = false
             refreshAccessibilityDiagnostics()
         }
@@ -1168,6 +1170,17 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     fun executeAutonomousGoal(goal: String) {
         executeGoal(goal)
+    }
+
+    fun executeUniversalTask(task: UniversalTask) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            refreshAccessibilityDiagnostics()
+            refreshCapabilities()
+            jarvisAgentCore.executeUniversalTask(task, viewModelScope)
+            _isProcessing.value = false
+            refreshAccessibilityDiagnostics()
+        }
     }
 
     // === Export / Import Brain ===
@@ -1573,6 +1586,27 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     fun clearLearnedSkills() {
         viewModelScope.launch {
             repository.clearLearnedSkills()
+            refreshLearningMetrics()
+        }
+    }
+
+    fun toggleSkill(skill: SkillEntity) {
+        viewModelScope.launch {
+            skillManager.toggleSkill(skill)
+            refreshLearningMetrics()
+        }
+    }
+
+    fun rollbackSkill(skill: SkillEntity) {
+        viewModelScope.launch {
+            skillManager.rollbackSkill(skill)
+            refreshLearningMetrics()
+        }
+    }
+
+    fun deleteSkill(skill: SkillEntity) {
+        viewModelScope.launch {
+            skillManager.deleteSkill(skill)
             refreshLearningMetrics()
         }
     }
