@@ -95,6 +95,9 @@ class JarvisRepository(private val dao: JarvisDao) {
         dao.clearVisualExperiences()
     }
     suspend fun searchKnowledge(query: String): List<KnowledgeChunkEntity> = dao.searchKnowledgeChunks(query)
+    suspend fun getRecentKnowledgeChunksSync(limit: Int = 3): List<KnowledgeChunkEntity> = withContext(Dispatchers.IO) {
+        dao.getAllKnowledgeChunksSync().take(limit)
+    }
     suspend fun insertKnowledgeChunk(chunk: KnowledgeChunkEntity): Long = dao.insertKnowledgeChunk(chunk)
     suspend fun deleteKnowledgeChunk(chunk: KnowledgeChunkEntity) = dao.deleteKnowledgeChunk(chunk)
     suspend fun clearKnowledgeChunks() = dao.clearKnowledgeChunks()

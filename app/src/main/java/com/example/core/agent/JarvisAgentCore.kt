@@ -3,6 +3,14 @@ package com.example.core.agent
 import android.content.Context
 import android.util.Log
 import com.example.core.accessibility.JarvisAccessibilityService
+import com.example.core.agent.conversation.ConversationSessionManager
+import com.example.core.agent.conversation.ConversationState
+import com.example.core.agent.conversation.FollowUpResolver
+import com.example.core.agent.conversation.ResolvedFollowUpResult
+import com.example.core.agent.debug.AgentDebugTraceExporter
+import com.example.core.agent.nlu.IntentCategory
+import com.example.core.agent.nlu.NaturalLanguageUnderstandingEngine
+import com.example.core.agent.nlu.SemanticUserIntent
 import com.example.core.learning.ExperienceEvaluator
 import com.example.core.learning.ExperienceManager
 import com.example.core.learning.ExperienceRecorder
@@ -18,9 +26,11 @@ import com.example.core.model.ToolIntent
 import com.example.core.security.SecurityPolicyEngine
 import com.example.core.tools.ToolExecutionResult
 import com.example.core.tools.ToolRouter
+import com.example.core.vision.GroundedVisualTarget
 import com.example.core.vision.ScreenUnderstandingEngine
 import com.example.core.vision.SemanticTarget
 import com.example.core.vision.UnifiedScreen
+import com.example.core.vision.UniversalVisualGroundingEngine
 import com.example.core.voice.VoiceManager
 import com.example.data.local.entity.ChatMessageEntity
 import com.example.data.local.entity.ExperienceSource
@@ -37,6 +47,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+
+data class AgentTurnResult(
+    val success: Boolean,
+    val responseText: String,
+    val toolIntent: ToolIntent? = null,
+    val toolResult: ToolExecutionResult? = null,
+    val providerType: String = "JARVIS_CORE",
+    val latencyMs: Long = 0L,
+    val isMultiStep: Boolean = false,
+    val awaitingFollowUp: Boolean = false,
+    val pendingConfirmation: ToolIntent? = null
+)
 
 data class TelemetryState(
     val currentGoal: String = "(None)",
@@ -99,6 +121,9 @@ class JarvisAgentCore(
         userCorrectionLearner = userCorrectionLearner
     )
     val transitionVerifier = ScreenTransitionVerifier()
+    val sessionManager = ConversationSessionManager()
+    val visualGroundingEngine = UniversalVisualGroundingEngine(context, screenEngine.universalEngine)
+    val nluEngine = NaturalLanguageUnderstandingEngine
 
     private val _agentState = MutableStateFlow(AgentState.IDLE)
     val agentState: StateFlow<AgentState> = _agentState.asStateFlow()
@@ -805,4 +830,243 @@ class JarvisAgentCore(
             Log.e("JarvisAgentCore", "Failed to save learned skill: ${e.message}")
         }
     }
+
+    /**
+     * Unified Turn Processing Pipeline:
+     * Natural Language -> NLU / Entity Extraction -> Context / FollowUp Resolver -> Plan / Act -> Verify -> Learn
+     */
+    suspend fun processUserTurn(
+        rawUtterance: String,
+        isVoice: Boolean = false,
+        scope: CoroutineScope
+    ): AgentTurnResult = withContext(Dispatchers.Main) {
+        val startNs = System.currentTimeMillis()
+        val trimmed = rawUtterance.trim()
+        if (trimmed.isBlank()) {
+            return@withContext AgentTurnResult(true, "Ready.")
+        }
+
+        val convState = sessionManager.conversationState.value
+
+        // 1. Multilingual NLU & Intent Parsing
+        val intent: SemanticUserIntent = nluEngine.parse(
+            input = trimmed,
+            currentApp = convState.currentAppPackage,
+            isAwaitingFollowUp = convState.awaitingFollowUp
+        )
+
+        logStep("🧠 NLU Intent: ${intent.category} -> ${intent.canonicalAction} (Confidence: ${(intent.confidence * 100).toInt()}%)")
+
+        // 2. Emergency Stop / Cancel
+        if (intent.category == IntentCategory.STOP_INTERRUPT) {
+            cancelActiveExecution()
+            val reply = "Execution cancelled."
+            sessionManager.recordTurn(trimmed, intent, null, true, true, reply)
+            return@withContext AgentTurnResult(true, reply, providerType = "AGENT_CORE", latencyMs = System.currentTimeMillis() - startNs)
+        }
+
+        // 3. User Confirmation Handling for Pending Tool
+        if (intent.category == IntentCategory.CONFIRMATION_RESPONSE) {
+            val pending = convState.pendingConfirmationIntent
+            if (pending != null) {
+                sessionManager.setPendingConfirmation(null)
+                if (intent.canonicalAction == "CONFIRM_YES") {
+                    logStep("✅ User authorized sensitive action: ${pending.toolName}")
+                    val toolResult = toolRouter.executeTool(pending)
+                    val reply = if (toolResult.success) {
+                        "Action executed: ${pending.toolName}. Output: ${toolResult.output}"
+                    } else {
+                        "Action failed: ${toolResult.errorMessage ?: "Unknown error"}"
+                    }
+                    sessionManager.recordTurn(trimmed, intent, pending, toolResult.success, toolResult.verified, reply)
+                    return@withContext AgentTurnResult(toolResult.success, reply, pending, toolResult, "AGENT_CORE", System.currentTimeMillis() - startNs)
+                } else {
+                    val reply = "Action cancelled by user."
+                    sessionManager.recordTurn(trimmed, intent, pending, false, true, reply)
+                    return@withContext AgentTurnResult(true, reply, pending, null, "AGENT_CORE", System.currentTimeMillis() - startNs)
+                }
+            }
+        }
+
+        // 4. Observe Screen Context
+        val currentScreen = if (intent.requiresScreenObservation) {
+            screenEngine.universalEngine.observeScreen(taskGoal = trimmed)
+        } else {
+            null
+        }
+
+        if (currentScreen != null) {
+            val appLabel = try {
+                val pm = context.packageManager
+                val info = pm.getApplicationInfo(currentScreen.packageName, 0)
+                pm.getApplicationLabel(info).toString()
+            } catch (e: Exception) {
+                currentScreen.packageName.substringAfterLast('.')
+            }
+            val summary = currentScreen.toSummary()
+            val visibleLabels = currentScreen.elements.mapNotNull { it.label ?: it.description }.take(15)
+            sessionManager.updateScreenState(currentScreen.packageName, appLabel, summary, visibleLabels)
+        }
+
+        // 5. Follow-Up Reference Resolution
+        var activeToolIntent: ToolIntent? = intent.directToolIntent
+        var resolvedGoal = trimmed
+
+        if (intent.isFollowUp || intent.category == IntentCategory.FOLLOW_UP_ACTION) {
+            val resolvedFollowUp = sessionManager.resolveFollowUp(intent, currentScreen)
+            logStep("🔗 Follow-up Resolution: ${resolvedFollowUp.explanation} (Confidence: ${(resolvedFollowUp.confidence * 100).toInt()}%)")
+
+            if (resolvedFollowUp.clarifyingQuestion != null) {
+                sessionManager.setAwaitingFollowUp(true)
+                sessionManager.recordTurn(trimmed, intent, null, true, true, resolvedFollowUp.clarifyingQuestion)
+                return@withContext AgentTurnResult(
+                    success = true,
+                    responseText = resolvedFollowUp.clarifyingQuestion,
+                    providerType = "AGENT_FOLLOW_UP_RESOLVER",
+                    latencyMs = System.currentTimeMillis() - startNs,
+                    awaitingFollowUp = true
+                )
+            }
+
+            if (resolvedFollowUp.isResolved && resolvedFollowUp.resolvedToolIntent != null) {
+                activeToolIntent = resolvedFollowUp.resolvedToolIntent
+                resolvedGoal = resolvedFollowUp.resolvedGoal
+            }
+        }
+
+        // 6. Direct Tool Intent Execution with Security Check & Verification
+        if (activeToolIntent != null && !intent.isMultiStep) {
+            val risk = SecurityPolicyEngine.evaluateToolRisk(activeToolIntent.toolName, activeToolIntent.arguments)
+            if (SecurityPolicyEngine.requiresUserConfirmation(risk)) {
+                sessionManager.setPendingConfirmation(activeToolIntent)
+                val confirmPrompt = "Confirmation Required: ${activeToolIntent.rationale.ifEmpty { activeToolIntent.toolName }} (Risk: $risk). Proceed?"
+                sessionManager.recordTurn(trimmed, intent, activeToolIntent, false, false, confirmPrompt)
+                return@withContext AgentTurnResult(
+                    success = true,
+                    responseText = confirmPrompt,
+                    toolIntent = activeToolIntent,
+                    providerType = "SECURITY_SHIELD",
+                    latencyMs = System.currentTimeMillis() - startNs,
+                    pendingConfirmation = activeToolIntent
+                )
+            }
+
+            _agentState.value = AgentState.ACTING
+            val toolResult = toolRouter.executeTool(activeToolIntent)
+            _lastActionResult.value = toolResult
+
+            delay(500)
+            val afterScreen = screenEngine.universalEngine.observeScreen(taskGoal = resolvedGoal)
+            val transitionOccurred = afterScreen.packageName != (currentScreen?.packageName ?: "")
+
+            val finalReply = if (toolResult.success) {
+                intent.naturalResponseRecommendation ?: toolResult.output
+            } else {
+                "Could not complete action: ${toolResult.errorMessage ?: "Action failed"}"
+            }
+
+            sessionManager.recordTurn(
+                userInput = trimmed,
+                intent = intent,
+                toolIntent = activeToolIntent,
+                actionSuccess = toolResult.success,
+                isVerified = toolResult.verified || transitionOccurred,
+                agentResponse = finalReply,
+                targetApp = afterScreen.packageName
+            )
+
+            updateTelemetry {
+                copy(
+                    currentGoal = resolvedGoal,
+                    action = activeToolIntent.toolName,
+                    actionResult = if (toolResult.success) "SUCCESS" else "FAILED",
+                    verificationResult = if (toolResult.verified || transitionOccurred) "VERIFIED" else "PENDING"
+                )
+            }
+
+            return@withContext AgentTurnResult(
+                success = toolResult.success,
+                responseText = finalReply,
+                toolIntent = activeToolIntent,
+                toolResult = toolResult,
+                providerType = "DETERMINISTIC_CORE",
+                latencyMs = System.currentTimeMillis() - startNs
+            )
+        }
+
+        // 7. Multi-step Autonomous Execution
+        if (intent.isMultiStep || intent.category == IntentCategory.APP_CONTROL || intent.category == IntentCategory.MEDIA_CONTROL || intent.category == IntentCategory.WEB_SEARCH) {
+            sessionManager.setActiveTask(resolvedGoal)
+            val executionSummary = executeGoal(resolvedGoal, scope)
+            sessionManager.setActiveTask(null)
+
+            val reply = if (executionSummary.success) {
+                "Completed task: ${executionSummary.goal} (${executionSummary.completedSteps}/${executionSummary.totalSteps} steps verified)."
+            } else {
+                "Task halted: ${executionSummary.finalOutput}"
+            }
+
+            sessionManager.recordTurn(
+                userInput = trimmed,
+                intent = intent,
+                toolIntent = null,
+                actionSuccess = executionSummary.success,
+                isVerified = executionSummary.success,
+                agentResponse = reply
+            )
+
+            return@withContext AgentTurnResult(
+                success = executionSummary.success,
+                responseText = reply,
+                providerType = "UNIVERSAL_AGENT_CORE",
+                latencyMs = System.currentTimeMillis() - startNs,
+                isMultiStep = true
+            )
+        }
+
+        // 8. Knowledge & Conversational Answering (Local Brain -> Gemini Teacher Fallback)
+        val knowledgeChunks = try {
+            repository.searchKnowledge(trimmed)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val response = if (knowledgeChunks.isNotEmpty() && (intent.category == IntentCategory.KNOWLEDGE_QUERY || intent.canonicalAction == "ANSWER_QUESTION")) {
+            "JARVIS Local Knowledge: ${knowledgeChunks.first().content}"
+        } else {
+            "I analyzed your request: \"$trimmed\"."
+        }
+
+        sessionManager.recordTurn(
+            userInput = trimmed,
+            intent = intent,
+            toolIntent = null,
+            actionSuccess = true,
+            isVerified = true,
+            agentResponse = response
+        )
+
+        return@withContext AgentTurnResult(
+            success = true,
+            responseText = response,
+            providerType = "LOCAL_REASONER",
+            latencyMs = System.currentTimeMillis() - startNs
+        )
+    }
+
+    fun exportDebugTraceJson(): String {
+        return AgentDebugTraceExporter.exportAsJson(
+            telemetry = _telemetryState.value,
+            conversationState = sessionManager.conversationState.value,
+            executionLogs = _executionLogs.value
+        )
+    }
+
+    fun exportDebugTraceText(): String {
+        return AgentDebugTraceExporter.exportAsHumanReadable(
+            telemetry = _telemetryState.value,
+            conversationState = sessionManager.conversationState.value,
+            executionLogs = _executionLogs.value
+        )
+    }
 }
+

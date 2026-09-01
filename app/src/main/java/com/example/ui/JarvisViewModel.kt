@@ -368,6 +368,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val conversationContext: StateFlow<VoiceConversationContext> = voiceManager.conversationContext
     val isMicrophoneMuted: StateFlow<Boolean> = voiceManager.isMicrophoneMuted
     val isCloudAllowed: StateFlow<Boolean> = voiceManager.isCloudAllowed
+
+    // Agent Core & Multi-Turn Conversation Pipeline Streams
+    val conversationState: StateFlow<com.example.core.agent.conversation.ConversationState> = jarvisAgentCore.sessionManager.conversationState
+    val agentTelemetryState: StateFlow<com.example.core.agent.TelemetryState> = jarvisAgentCore.telemetryState
+    val activeUniversalTask: StateFlow<com.example.core.agent.UniversalTask?> = jarvisAgentCore.activeUniversalTask
+    val agentExecutionLogs: StateFlow<List<String>> = jarvisAgentCore.executionLogs
+
+    fun exportDebugTraceJson(): String = jarvisAgentCore.exportDebugTraceJson()
+    fun exportDebugTraceText(): String = jarvisAgentCore.exportDebugTraceText()
     val isOverlayActive: StateFlow<Boolean> = JarvisOverlayService.isOverlayActive
     val isVoiceServiceRunning: StateFlow<Boolean> = JarvisVoiceForegroundService.isRunning
 
@@ -654,380 +663,35 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
 
-            // 2.3 Deterministic No-LLM Command Fast Path (Zero token, sub-10ms)
-            val deterministicMatch = com.example.core.model.IntentRouter.matchCommand(trimmed)
-            if (deterministicMatch.isMatched) {
-                val startNs = System.currentTimeMillis()
-                if (deterministicMatch.toolIntent != null) {
-                    val toolResult = toolRouter.executeTool(deterministicMatch.toolIntent)
-                    _lastExecutionResult.value = toolResult
-                    val latency = System.currentTimeMillis() - startNs
-                    performanceMonitor.recordNoAiTask(latency)
-                    val reply = deterministicMatch.directOutput ?: toolResult.output
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = reply,
-                            providerType = "NO_AI_DETERMINISTIC",
-                            toolCallInfo = deterministicMatch.toolIntent.toolName,
-                            latencyMs = latency
-                        )
-                    )
-                    voiceManager.speak(reply)
-                } else {
-                    val latency = 2L
-                    performanceMonitor.recordNoAiTask(latency)
-                    val reply = deterministicMatch.directOutput ?: "Processed."
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = reply,
-                            providerType = "NO_AI_DETERMINISTIC",
-                            latencyMs = latency
-                        )
-                    )
-                    voiceManager.speak(reply)
-                }
-                _isProcessing.value = false
-                return@launch
-            }
-
-            // 2.5 Communication & Confirmation Intent Handling
-            val commIntent = CommunicationIntentParser.parse(trimmed)
-
-            // Handle direct user confirmation if an action is pending
-            if (_pendingConfirmationIntent.value != null) {
-                if (commIntent is CommunicationIntent.UserConfirmation) {
-                    if (commIntent.confirmed) {
-                        approvePendingTool()
-                    } else {
-                        cancelPendingTool()
-                    }
-                    _isProcessing.value = false
-                    return@launch
-                }
-            }
-
-            // Handle dedicated Communication Intents
-            when (commIntent) {
-                is CommunicationIntent.FindContact -> {
-                    val result = toolRouter.executeTool(
-                        ToolIntent("find_contact", mapOf("query" to commIntent.contactQuery), "LOW")
-                    )
-                    _lastExecutionResult.value = result
-                    val reply = result.output
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = reply,
-                            providerType = "COMMUNICATION_ENGINE",
-                            toolCallInfo = "find_contact"
-                        )
-                    )
-                    voiceManager.speak(reply)
-                    _isProcessing.value = false
-                    return@launch
-                }
-
-                is CommunicationIntent.MakeCall -> {
-                    val app = getApplication<Application>()
-                    val contactRes = ContactResolver.searchContacts(app, commIntent.contactQuery)
-                    var targetNumber = commIntent.directNumber
-                    var targetName = commIntent.contactQuery
-
-                    when (contactRes) {
-                        is ContactResolutionResult.SingleMatch -> {
-                            targetNumber = contactRes.contact.phoneNumber
-                            targetName = contactRes.contact.name
-                        }
-                        is ContactResolutionResult.MultipleMatches -> {
-                            val list = contactRes.matches.joinToString(", ") { "${it.name} (${it.phoneNumber})" }
-                            val msg = "Found multiple contacts matching '${commIntent.contactQuery}': $list. Which one would you like to call?"
-                            repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
-                            voiceManager.speak(msg)
-                            _isProcessing.value = false
-                            return@launch
-                        }
-                        is ContactResolutionResult.NoMatch -> {
-                            if (targetNumber == null) {
-                                val msg = "No contact found with name '${commIntent.contactQuery}' in your address book."
-                                repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
-                                voiceManager.speak(msg)
-                                _isProcessing.value = false
-                                return@launch
-                            }
-                        }
-                        else -> {}
-                    }
-
-                    val finalNumber = targetNumber ?: commIntent.contactQuery
-                    val toolIntent = ToolIntent("make_phone_call", mapOf("contact_name" to targetName, "number" to finalNumber), "HIGH")
-                    _pendingConfirmationIntent.value = toolIntent
-
-                    val confirmMsg = "Ready to call $targetName ($finalNumber). Should I proceed?"
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = confirmMsg,
-                            providerType = "COMMUNICATION_ENGINE",
-                            toolCallInfo = "make_phone_call"
-                        )
-                    )
-                    voiceManager.speak(confirmMsg)
-                    _isProcessing.value = false
-                    return@launch
-                }
-
-                is CommunicationIntent.SendSms -> {
-                    val app = getApplication<Application>()
-                    val contactRes = ContactResolver.searchContacts(app, commIntent.contactQuery)
-                    var targetNumber = commIntent.directNumber
-                    var targetName = commIntent.contactQuery
-
-                    when (contactRes) {
-                        is ContactResolutionResult.SingleMatch -> {
-                            targetNumber = contactRes.contact.phoneNumber
-                            targetName = contactRes.contact.name
-                        }
-                        is ContactResolutionResult.MultipleMatches -> {
-                            val list = contactRes.matches.joinToString(", ") { "${it.name} (${it.phoneNumber})" }
-                            val msg = "Found multiple contacts matching '${commIntent.contactQuery}': $list. Which one should I text?"
-                            repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
-                            voiceManager.speak(msg)
-                            _isProcessing.value = false
-                            return@launch
-                        }
-                        is ContactResolutionResult.NoMatch -> {
-                            if (targetNumber == null) {
-                                val msg = "Cannot find contact '${commIntent.contactQuery}' to send SMS."
-                                repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
-                                voiceManager.speak(msg)
-                                _isProcessing.value = false
-                                return@launch
-                            }
-                        }
-                        else -> {}
-                    }
-
-                    val finalNumber = targetNumber ?: commIntent.contactQuery
-                    val toolIntent = ToolIntent(
-                        "send_sms",
-                        mapOf("recipient" to targetName, "number" to finalNumber, "message" to commIntent.messageText),
-                        "HIGH"
-                    )
-                    _pendingConfirmationIntent.value = toolIntent
-
-                    val confirmMsg = "Ready to send SMS to $targetName ($finalNumber):\n\"${commIntent.messageText}\"\nShould I send it?"
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = confirmMsg,
-                            providerType = "COMMUNICATION_ENGINE",
-                            toolCallInfo = "send_sms"
-                        )
-                    )
-                    voiceManager.speak("Ready to send SMS to $targetName. Should I send it?")
-                    _isProcessing.value = false
-                    return@launch
-                }
-
-                is CommunicationIntent.SendWhatsAppMessage -> {
-                    val app = getApplication<Application>()
-                    val contactRes = ContactResolver.searchContacts(app, commIntent.contactQuery)
-                    var targetName = commIntent.contactQuery
-
-                    if (contactRes is ContactResolutionResult.SingleMatch) {
-                        targetName = contactRes.contact.name
-                    } else if (contactRes is ContactResolutionResult.MultipleMatches) {
-                        val list = contactRes.matches.joinToString(", ") { "${it.name} (${it.phoneNumber})" }
-                        val msg = "Found multiple contacts matching '${commIntent.contactQuery}': $list. Which one should I message on WhatsApp?"
-                        repository.insertChatMessage(ChatMessageEntity(role = "JARVIS", message = msg, providerType = "COMMUNICATION_ENGINE"))
-                        voiceManager.speak(msg)
-                        _isProcessing.value = false
-                        return@launch
-                    }
-
-                    val toolIntent = ToolIntent(
-                        "send_whatsapp_message",
-                        mapOf("contact_name" to targetName, "message" to commIntent.messageText),
-                        "HIGH"
-                    )
-                    _pendingConfirmationIntent.value = toolIntent
-
-                    val confirmMsg = "Ready to send WhatsApp message to $targetName:\n\"${commIntent.messageText}\"\nShould I proceed?"
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = confirmMsg,
-                            providerType = "COMMUNICATION_ENGINE",
-                            toolCallInfo = "send_whatsapp_message"
-                        )
-                    )
-                    voiceManager.speak("Ready to send WhatsApp message to $targetName. Should I proceed?")
-                    _isProcessing.value = false
-                    return@launch
-                }
-
-                is CommunicationIntent.OpenWhatsApp -> {
-                    val target = commIntent.contactQuery
-                    val toolResult = if (target != null) {
-                        toolRouter.executeTool(ToolIntent("open_whatsapp_chat", mapOf("contact_name" to target), "LOW"))
-                    } else {
-                        toolRouter.executeTool(ToolIntent("open_app", mapOf("app_name" to "WhatsApp"), "LOW"))
-                    }
-                    _lastExecutionResult.value = toolResult
-                    val reply = toolResult.output
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = reply,
-                            providerType = "COMMUNICATION_ENGINE",
-                            toolCallInfo = "open_whatsapp"
-                        )
-                    )
-                    voiceManager.speak(reply)
-                    _isProcessing.value = false
-                    return@launch
-                }
-
-                else -> {
-                    // Proceed to Universal Task Planner / Model
-                }
-            }
-
-            // 3. Multi-Step Task Planner Check (PHASE H)
-            val multiStepPlan = AgentController.planTaskForQuery(trimmed)
-            if (multiStepPlan != null) {
-                val planNotice = "Executing Plan: ${multiStepPlan.goal} (${multiStepPlan.steps.size} steps)"
-                repository.insertChatMessage(
-                    ChatMessageEntity(
-                        role = "JARVIS",
-                        message = planNotice,
-                        providerType = "AGENT_PLANNER",
-                        toolCallInfo = "multi_step_executor"
-                    )
-                )
-                voiceManager.speak(planNotice)
-
-                val summary = agentController.executeTaskPlan(multiStepPlan) { stepUpdate ->
-                    viewModelScope.launch {
-                        repository.insertChatMessage(
-                            ChatMessageEntity(
-                                role = "AGENT",
-                                message = stepUpdate,
-                                providerType = "AGENT_CONTROLLER"
-                            )
-                        )
-                    }
-                }
-
-                refreshAccessibilityDiagnostics()
-                val finishMsg = if (summary.success) {
-                    "Plan Completed Successfully: ${summary.goal} (${summary.completedSteps}/${summary.totalSteps} steps verified)."
-                } else {
-                    "Plan Execution Halted: ${summary.finalOutput}"
-                }
-
-                repository.insertChatMessage(
-                    ChatMessageEntity(
-                        role = "JARVIS",
-                        message = finishMsg,
-                        providerType = "AGENT_CONTROLLER"
-                    )
-                )
-                voiceManager.speak(finishMsg)
-                _isProcessing.value = false
-                return@launch
-            }
-
-            // 4. Local Offline RAG Search
-            val currentChunks = allKnowledgeChunks.value
-            val relevant = RagEngine.findRelevantChunks(trimmed, currentChunks, topK = 2)
-            val matchedContext = relevant.map { it.first }
-
-            // 5. Invoke Active Model Provider
-            val provider: ModelProvider = when (_activeModelType.value) {
-                ActiveModelType.LOCAL_GGUF_CPU, ActiveModelType.LOCAL_SLM -> localProvider
-                ActiveModelType.GEMINI_CLOUD_TEACHER, ActiveModelType.GEMINI_FLASH -> geminiProvider
-                ActiveModelType.HYBRID_SUPERVISED -> hybridProvider
-            }
-
-            val response: ModelResponse = provider.generateResponse(
-                prompt = trimmed,
-                contextChunks = matchedContext,
-                language = _currentLanguage.value
+            // 2. Execute via Unified Agent Core (NLU -> Context -> Follow-up -> Visual Grounding -> Plan/Act -> Verify -> Learn)
+            val turnResult = jarvisAgentCore.processUserTurn(
+                rawUtterance = trimmed,
+                isVoice = false,
+                scope = viewModelScope
             )
 
-            // 6. Handle Tool Planning & Execution with Screen Verification (PHASE G & I)
-            if (response.toolIntent != null) {
-                val intent = response.toolIntent
-                val risk = SecurityPolicyEngine.evaluateToolRisk(intent.toolName, intent.arguments)
-
-                if (SecurityPolicyEngine.requiresUserConfirmation(risk)) {
-                    _pendingConfirmationIntent.value = intent
-                    val confirmMsg = "Confirmation Required: Tool '${intent.toolName}' has risk level $risk. Please approve to execute on device."
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = confirmMsg,
-                            providerType = response.providerType,
-                            toolCallInfo = intent.toolName,
-                            latencyMs = response.latencyMs
-                        )
-                    )
-                    voiceManager.speak(confirmMsg)
-                    _isProcessing.value = false
-                    return@launch
-                } else {
-                    // Safe execution with verification
-                    val toolResult = toolRouter.executeTool(intent)
-                    _lastExecutionResult.value = toolResult
-                    repository.incrementSkillUsage(intent.toolName)
-                    refreshAccessibilityDiagnostics()
-
-                    val replyWithTool = "${response.text}\n[Tool ${intent.toolName}: ${if (toolResult.success) "SUCCESS" else "FAILED"}]\nEvidence: ${toolResult.evidence ?: toolResult.output}"
-                    repository.insertChatMessage(
-                        ChatMessageEntity(
-                            role = "JARVIS",
-                            message = replyWithTool,
-                            providerType = response.providerType,
-                            toolCallInfo = intent.toolName,
-                            latencyMs = response.latencyMs
-                        )
-                    )
-                    voiceManager.speak(response.text)
-                }
-            } else {
-                // Conversational Reply
-                repository.insertChatMessage(
-                    ChatMessageEntity(
-                        role = "JARVIS",
-                        message = response.text,
-                        providerType = response.providerType,
-                        latencyMs = response.latencyMs
-                    )
-                )
-                voiceManager.speak(response.text)
-
-                // 7. Teacher -> Student Learning Pipeline
-                if (response.isTeacherTrained && response.confidence >= 0.90f) {
-                    val candidate = TeacherStudentPipeline.processTeacherResponse(trimmed, response.text)
-                    if (candidate != null) {
-                        repository.insertKnowledgeChunk(TeacherStudentPipeline.convertToKnowledgeChunk(candidate))
-                        repository.insertMemory(TeacherStudentPipeline.convertToMemoryEntity(candidate))
-                        repository.insertSecurityEvent(
-                            SecurityEventEntity(
-                                eventType = "KNOWLEDGE_LEARNED",
-                                riskScore = 0,
-                                source = "TeacherStudentPipeline",
-                                description = "Validated new fact from Gemini Teacher and cached in local offline storage.",
-                                actionTaken = "Local Knowledge Base Updated",
-                                isResolved = true
-                            )
-                        )
-                    }
+            if (turnResult.pendingConfirmation != null) {
+                _pendingConfirmationIntent.value = turnResult.pendingConfirmation
+            }
+            if (turnResult.toolResult != null) {
+                _lastExecutionResult.value = turnResult.toolResult
+                if (turnResult.toolIntent != null) {
+                    repository.incrementSkillUsage(turnResult.toolIntent.toolName)
                 }
             }
+
+            refreshAccessibilityDiagnostics()
+
+            repository.insertChatMessage(
+                ChatMessageEntity(
+                    role = "JARVIS",
+                    message = turnResult.responseText,
+                    providerType = turnResult.providerType,
+                    toolCallInfo = turnResult.toolIntent?.toolName,
+                    latencyMs = turnResult.latencyMs
+                )
+            )
+            voiceManager.speak(turnResult.responseText)
 
             _isProcessing.value = false
         }

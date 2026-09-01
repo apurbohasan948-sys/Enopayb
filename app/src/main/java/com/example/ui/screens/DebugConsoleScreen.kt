@@ -10,25 +10,33 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -38,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -71,10 +81,13 @@ fun DebugConsoleScreen(
     val logs by viewModel.jarvisAgentCore.executionLogs.collectAsState()
     val worldSnapshot = viewModel.jarvisAgentCore.worldModel.latestSnapshot
     val latestScreen by viewModel.latestUnifiedScreen.collectAsState()
-    val memories by viewModel.allMemories.collectAsState()
-    val skills by viewModel.allSkills.collectAsState()
+    val conversationState by viewModel.conversationState.collectAsState()
+    val telemetry by viewModel.agentTelemetryState.collectAsState()
 
     var testGoalInput by remember { mutableStateOf("Play Tom and Jerry on YouTube") }
+    var showTraceDialog by remember { mutableStateOf(false) }
+    var traceDialogContent by remember { mutableStateOf("") }
+    val clipboardManager = LocalClipboardManager.current
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -101,7 +114,7 @@ fun DebugConsoleScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                             Icon(
                                 imageVector = Icons.Default.BugReport,
                                 contentDescription = "Debug",
@@ -122,6 +135,19 @@ fun DebugConsoleScreen(
                                     color = JarvisTextMuted
                                 )
                             }
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                traceDialogContent = viewModel.exportDebugTraceJson()
+                                showTraceDialog = true
+                            },
+                            border = BorderStroke(1.dp, JarvisCyan),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.Code, contentDescription = "Export Trace", tint = JarvisCyan)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("TRACE JSON", color = JarvisCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }
@@ -188,6 +214,37 @@ fun DebugConsoleScreen(
                 }
             }
 
+            // Multi-Turn Persistent Conversation Context
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = JarvisDarkNavy),
+                    border = BorderStroke(1.dp, JarvisBorder)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "PERSISTENT CONVERSATION STATE & CONTEXT",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = JarvisCyan
+                        )
+
+                        DebugTelemetryRow("SESSION ID", conversationState.sessionId.take(16) + "...", JarvisTextPrimary)
+                        DebugTelemetryRow("TURN COUNT", "${conversationState.turnHistory.size} recorded turns", JarvisTextSecondary)
+                        DebugTelemetryRow("ACTIVE GOAL", conversationState.activeTaskGoal ?: "(None)", JarvisAmber)
+                        DebugTelemetryRow("CURRENT APP", conversationState.currentAppPackage ?: "(Unknown)", JarvisCyan)
+                        DebugTelemetryRow("SCREEN SUMMARY", conversationState.currentScreenSummary ?: "(Not Captured)", JarvisBlue)
+                        DebugTelemetryRow("LAST REFERENCED", conversationState.lastReferencedItem ?: "(None)", JarvisEmerald)
+                        DebugTelemetryRow("AWAITING CONFIRM", if (conversationState.pendingConfirmationIntent != null) conversationState.pendingConfirmationIntent!!.toolName else "False", if (conversationState.pendingConfirmationIntent != null) JarvisRed else JarvisEmerald)
+                        DebugTelemetryRow("AWAITING FOLLOWUP", conversationState.awaitingFollowUp.toString(), if (conversationState.awaitingFollowUp) JarvisAmber else JarvisTextMuted)
+                        DebugTelemetryRow("LAST ACTION", conversationState.lastActionName ?: "(None)", JarvisTextSecondary)
+                        DebugTelemetryRow("LAST VERIFY STATUS", if (conversationState.lastActionVerified) "VERIFIED" else "UNVERIFIED", if (conversationState.lastActionVerified) JarvisEmerald else JarvisAmber)
+                    }
+                }
+            }
+
             // Live State Grid
             item {
                 Card(
@@ -204,8 +261,6 @@ fun DebugConsoleScreen(
                             fontSize = 12.sp,
                             color = JarvisAmber
                         )
-
-                        val telemetry by viewModel.jarvisAgentCore.telemetryState.collectAsState()
 
                         DebugTelemetryRow("CURRENT GOAL", if (telemetry.currentGoal != "(None)") telemetry.currentGoal else currentGoal.ifEmpty { "(None Active)" }, JarvisTextPrimary)
                         DebugTelemetryRow("CURRENT APP", if (telemetry.currentApp.isNotEmpty()) telemetry.currentApp else worldSnapshot.foregroundPackage, JarvisCyan)
@@ -261,6 +316,57 @@ fun DebugConsoleScreen(
                 }
             }
         }
+    }
+
+    if (showTraceDialog) {
+        AlertDialog(
+            onDismissRequest = { showTraceDialog = false },
+            title = {
+                Text(
+                    "AGENT DEBUG TRACE (JSON)",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = JarvisCyan
+                )
+            },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                        .background(JarvisDarkNavy, RoundedCornerShape(8.dp))
+                        .padding(12.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = traceDialogContent,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = JarvisTextPrimary
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(traceDialogContent))
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = JarvisCyan)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = Color.Black)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("COPY TRACE", color = Color.Black, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTraceDialog = false }) {
+                    Text("CLOSE", color = JarvisTextSecondary, fontFamily = FontFamily.Monospace)
+                }
+            },
+            containerColor = JarvisCardBg,
+            shape = RoundedCornerShape(12.dp)
+        )
     }
 }
 

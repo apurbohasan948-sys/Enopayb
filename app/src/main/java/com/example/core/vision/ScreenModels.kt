@@ -33,6 +33,7 @@ object SemanticTarget {
     const val INPUT_FIELD = "INPUT_FIELD"
     const val VIDEO_ITEM = "VIDEO_ITEM"
     const val CONTACT_ITEM = "CONTACT_ITEM"
+    const val LIST_ITEM = "LIST_ITEM"
     const val NOTIFICATION = "NOTIFICATION"
     const val BUTTON = "BUTTON"
     const val UNKNOWN = "UNKNOWN"
